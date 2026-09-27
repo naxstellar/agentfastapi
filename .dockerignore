@@ -1,0 +1,9 @@
+.venv/
+env/
+certs/
+__pycache__/
+*.pyc
+.git/
+scripts/
+.idea/
+.claude/

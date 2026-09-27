@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FastAPI over HTTPS</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #0f172a;
+      color: #f1f5f9;
+      gap: 1rem;
+    }
+    h1 { font-size: 2rem; margin-bottom: 0; }
+    p { color: #94a3b8; margin: 0; }
+    .actions { display: flex; gap: 0.5rem; }
+    button, a.button {
+      font: inherit;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #1e293b;
+      color: #f1f5f9;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    button:hover, a.button:hover { background: #334155; }
+    .indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.95rem; }
+    .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #64748b; }
+    .dot.signed-in { background: #22c55e; }
+    pre {
+      background: #1e293b;
+      padding: 1rem;
+      border-radius: 8px;
+      max-width: 80vw;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    code {
+      background: #1e293b;
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔒 It works!</h1>
+
+  <div class="indicator">
+    <span id="dot" class="dot"></span>
+    <span id="status">Checking session&hellip;</span>
+  </div>
+
+  <div class="actions">
+    <a id="login-btn" class="button" href="/loginuser" style="display:none">Login</a>
+    <a id="register-btn" class="button" href="/register" style="display:none">Register</a>
+    <button id="logout" style="display:none">Logout</button>
+    <button id="test-api" style="display:none">Call /api/v1/me</button>
+  </div>
+
+  <pre id="result" style="display:none"></pre>
+
+  <p>Public JSON endpoint: <code>/api/hello</code></p>
+
+  <script>
+    const dotEl = document.getElementById("dot");
+    const statusEl = document.getElementById("status");
+    const loginBtn = document.getElementById("login-btn");
+    const registerBtn = document.getElementById("register-btn");
+    const logoutBtn = document.getElementById("logout");
+    const testBtn = document.getElementById("test-api");
+    const resultEl = document.getElementById("result");
+
+    async function loadSession() {
+      const res = await fetch("/session-info");
+      const info = await res.json();
+
+      if (info.authenticated) {
+        dotEl.classList.add("signed-in");
+        statusEl.textContent = `Signed in as ${info.name || info.email || "user"}`;
+        logoutBtn.style.display = "inline-block";
+        testBtn.style.display = "inline-block";
+        loginBtn.style.display = "none";
+        registerBtn.style.display = "none";
+      } else {
+        statusEl.textContent = "Not signed in";
+        loginBtn.style.display = "inline-block";
+        registerBtn.style.display = "inline-block";
+        logoutBtn.style.display = "none";
+        testBtn.style.display = "none";
+      }
+    }
+
+    loadSession();
+
+    logoutBtn.addEventListener("click", () => {
+      window.location.href = "/logout";
+    });
+
+    testBtn.addEventListener("click", async () => {
+      resultEl.style.display = "block";
+      resultEl.textContent = "Loading...";
+      try {
+        const res = await fetch("/api/v1/me");
+        const body = await res.json();
+        resultEl.textContent = `${res.status}\n${JSON.stringify(body, null, 2)}`;
+      } catch (err) {
+        resultEl.textContent = `Request failed: ${err}`;
+      }
+    });
+  </script>
+</body>
+</html>

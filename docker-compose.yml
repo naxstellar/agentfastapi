@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentfastapi
+      POSTGRES_PASSWORD: agentfastapi
+      POSTGRES_DB: agentfastapi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    profiles: ["full"]
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - env/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://agentfastapi:agentfastapi@postgres:5432/agentfastapi
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./certs:/app/certs:ro
+
+volumes:
+  pgdata:
