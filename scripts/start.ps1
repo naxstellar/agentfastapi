@@ -7,12 +7,14 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $ProjectRoot
 
 Write-Host "Starting Postgres + Redis containers..."
-docker compose up -d
+docker compose --env-file env/.env up -d
+
+$pgUser = (Get-Content (Join-Path $ProjectRoot "env\.env") | Select-String '^POSTGRES_USER=').ToString().Split('=', 2)[1]
 
 Write-Host "Waiting for Postgres to be ready..."
 $ready = $false
 for ($i = 0; $i -lt 15; $i++) {
-    docker compose exec -T postgres pg_isready -U agentfastapi *> $null
+    docker compose exec -T postgres pg_isready -U $pgUser *> $null
     if ($?) {
         $ready = $true
         break

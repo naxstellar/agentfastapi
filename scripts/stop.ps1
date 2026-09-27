@@ -59,6 +59,6 @@ Write-Host "Stopping Postgres + Redis + api (if running) containers..."
 # --profile full is passed unconditionally so `down` also tears down the api container when
 # it was started via the full-Docker-profile workflow -- `docker compose down` alone ignores
 # profiled services regardless of which mode was actually used to start them.
-docker compose --profile full down
+docker compose --env-file env/.env --profile full down
 
 Write-Host "Done."
