@@ -15,3 +15,10 @@ def refresh_tokens(refresh_token: str) -> dict:
     )
     response.raise_for_status()
     return response.json()
+
+
+def apply_refreshed_tokens(session: dict, tokens: dict) -> dict:
+    session["access_token"] = tokens.get("access_token", session.get("access_token"))
+    session["id_token"] = tokens.get("id_token", session.get("id_token"))
+    session["refresh_token"] = tokens.get("refresh_token", session.get("refresh_token"))
+    return session

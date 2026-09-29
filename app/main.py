@@ -40,10 +40,10 @@ app.include_router(api_v1_router)
 
 
 @app.get("/")
-def read_index():
+def read_index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/hello")
-def read_hello():
+def read_hello() -> dict[str, str]:
     return {"message": "Hello, HTTPS!"}

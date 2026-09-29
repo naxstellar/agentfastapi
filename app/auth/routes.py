@@ -1,15 +1,17 @@
 import logging
 import secrets
+from typing import Annotated
 from urllib.parse import urlencode
 
 import httpx
 import jwt
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from app.auth.redis_state import consume_state, save_state
 from app.auth.session_store import create_session, delete_session, get_session, update_session
-from app.auth.token_refresh import refresh_tokens
+from app.auth.token_refresh import apply_refreshed_tokens, refresh_tokens
 from app.config import (
     AUTH0_AUDIENCE,
     AUTH0_CALLBACK_URL,
@@ -24,6 +26,23 @@ from app.models import upsert_user
 logger = logging.getLogger("app.auth")
 
 router = APIRouter()
+
+
+class RefreshResponse(BaseModel):
+    refreshed: bool
+    expires_in: int | None = None
+
+
+class DecodedToken(BaseModel):
+    header: dict
+    payload: dict
+    signature_verified: bool
+
+
+class SessionInfo(BaseModel):
+    authenticated: bool
+    name: str | None = None
+    email: str | None = None
 
 
 def _authorize_url(state: str, screen_hint: str | None = None) -> str:
@@ -41,14 +60,14 @@ def _authorize_url(state: str, screen_hint: str | None = None) -> str:
 
 
 @router.get("/loginuser")
-def login_user():
+def login_user() -> RedirectResponse:
     state = secrets.token_urlsafe(24)
     save_state(state)
     return RedirectResponse(_authorize_url(state))
 
 
 @router.get("/register")
-def register():
+def register() -> RedirectResponse:
     state = secrets.token_urlsafe(24)
     save_state(state)
     return RedirectResponse(_authorize_url(state, screen_hint="signup"))
@@ -57,11 +76,11 @@ def register():
 @router.get("/callback")
 def callback(
     request: Request,
-    state: str = Query(...),
-    code: str | None = Query(default=None),
-    error: str | None = Query(default=None),
-    error_description: str | None = Query(default=None),
-):
+    state: Annotated[str, Query()],
+    code: Annotated[str | None, Query()] = None,
+    error: Annotated[str | None, Query()] = None,
+    error_description: Annotated[str | None, Query()] = None,
+) -> RedirectResponse:
     if not consume_state(state):
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
@@ -112,7 +131,7 @@ def callback(
 
 
 @router.post("/refresh")
-def refresh(request: Request):
+def refresh(request: Request) -> RefreshResponse:
     session_id = request.session.get("session_id")
     session = get_session(session_id)
     if not session or not session.get("refresh_token"):
@@ -123,40 +142,37 @@ def refresh(request: Request):
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=400, detail=f"Refresh failed: {exc.response.text}") from exc
 
-    session["access_token"] = tokens.get("access_token", session["access_token"])
-    session["id_token"] = tokens.get("id_token", session.get("id_token"))
-    session["refresh_token"] = tokens.get("refresh_token", session["refresh_token"])
-    update_session(session_id, session)
+    update_session(session_id, apply_refreshed_tokens(session, tokens))
 
-    return {"refreshed": True, "expires_in": tokens.get("expires_in")}
+    return RefreshResponse(refreshed=True, expires_in=tokens.get("expires_in"))
 
 
 @router.get("/decode-token")
-def decode_token(token: str = Query(...)):
+def decode_token(token: Annotated[str, Query()]) -> DecodedToken:
     try:
         header = jwt.get_unverified_header(token)
         payload = jwt.decode(token, options={"verify_signature": False})
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid token: {exc}") from exc
-    return {"header": header, "payload": payload, "signature_verified": False}
+    return DecodedToken(header=header, payload=payload, signature_verified=False)
 
 
-@router.get("/session-info")
-def session_info(request: Request):
+@router.get("/session-info", response_model_exclude_none=True)
+def session_info(request: Request) -> SessionInfo:
     session_id = request.session.get("session_id")
     session = get_session(session_id)
     if not session:
-        return {"authenticated": False}
+        return SessionInfo(authenticated=False)
     claims = session.get("claims", {})
-    return {
-        "authenticated": True,
-        "name": claims.get("name") or claims.get("nickname") or claims.get("email"),
-        "email": claims.get("email"),
-    }
+    return SessionInfo(
+        authenticated=True,
+        name=claims.get("name") or claims.get("nickname") or claims.get("email"),
+        email=claims.get("email"),
+    )
 
 
 @router.get("/logout")
-def logout(request: Request):
+def logout(request: Request) -> RedirectResponse:
     session_id = request.session.get("session_id")
     delete_session(session_id)
     request.session.clear()
