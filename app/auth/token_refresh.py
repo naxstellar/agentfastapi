@@ -2,6 +2,9 @@ import httpx
 
 from app.config import AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_DOMAIN
 
+# Per phase (connect/read/...); keeps a refresh well inside the 10 s per-session refresh lock TTL.
+REFRESH_TIMEOUT = httpx.Timeout(3.0)
+
 
 def refresh_tokens(refresh_token: str) -> dict:
     response = httpx.post(
@@ -12,6 +15,7 @@ def refresh_tokens(refresh_token: str) -> dict:
             "client_secret": AUTH0_CLIENT_SECRET,
             "refresh_token": refresh_token,
         },
+        timeout=REFRESH_TIMEOUT,
     )
     response.raise_for_status()
     return response.json()

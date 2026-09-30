@@ -76,6 +76,13 @@
     const testBtn = document.getElementById("test-api");
     const resultEl = document.getElementById("result");
 
+    // All /api/v1 calls go through this: state-changing requests are rejected (403) without X-Requested-With.
+    function apiFetch(url, options = {}) {
+      const headers = new Headers(options.headers);
+      headers.set("X-Requested-With", "fetch");
+      return fetch(url, { ...options, headers });
+    }
+
     async function loadSession() {
       const res = await fetch("/session-info");
       const info = await res.json();
@@ -106,7 +113,7 @@
       resultEl.style.display = "block";
       resultEl.textContent = "Loading...";
       try {
-        const res = await fetch("/api/v1/me");
+        const res = await apiFetch("/api/v1/me");
         const body = await res.json();
         resultEl.textContent = `${res.status}\n${JSON.stringify(body, null, 2)}`;
       } catch (err) {
