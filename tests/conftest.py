@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 import app.auth.redis_state  # noqa: E402
 import app.auth.session_store  # noqa: E402
 import app.redis_client  # noqa: E402
+import app.workers.datasets  # noqa: E402
 from app.auth.security import get_current_user  # noqa: E402
 from app.config import DATABASE_URL, SESSION_SECRET_KEY  # noqa: E402
 from app.db import Base, get_db  # noqa: E402
@@ -109,7 +110,8 @@ def db(db_engine):
 @pytest.fixture
 def fake_redis(monkeypatch):
     client = fakeredis.FakeRedis(decode_responses=True)
-    for module in (app.redis_client, app.auth.session_store, app.auth.redis_state):
+    # Every module that does `from app.redis_client import redis_client` needs patching.
+    for module in (app.redis_client, app.auth.session_store, app.auth.redis_state, app.workers.datasets):
         monkeypatch.setattr(module, "redis_client", client)
     return client
 
@@ -158,3 +160,24 @@ def session_cookie(session_id: str) -> dict[str, str]:
     data = b64encode(json.dumps({"session_id": session_id}).encode("utf-8"))
     signed = itsdangerous.TimestampSigner(SESSION_SECRET_KEY).sign(data).decode("utf-8")
     return {"Cookie": f"session={signed}"}
+
+
+@pytest.fixture
+def make_user(db):
+    def _make(sub: str) -> User:
+        db_user = User(auth0_sub=sub, email=f"{sub.split('|')[-1]}@example.com")
+        db.add(db_user)
+        db.flush()
+        return db_user
+
+    return _make
+
+
+@pytest.fixture
+def login_as():
+    """Makes subsequent requests authenticate as `user` (switchable mid-test)."""
+
+    def _login(user: User) -> None:
+        fastapi_app.dependency_overrides[get_current_user] = lambda: {"sub": user.auth0_sub}
+
+    return _login

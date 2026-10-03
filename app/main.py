@@ -2,8 +2,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+import google.auth.exceptions
+import kombu.exceptions
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
+from google.api_core.exceptions import GoogleAPIError
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -16,6 +19,7 @@ from app.redis_client import async_redis_client
 from app.routers.api_v1 import router as api_v1_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+logger = logging.getLogger("app")
 
 
 @asynccontextmanager
@@ -37,6 +41,18 @@ app.add_middleware(
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+
+# GCS, IAM signing and the Celery broker are external dependencies: their outages are 503s, not 500s.
+@app.exception_handler(GoogleAPIError)
+@app.exception_handler(google.auth.exceptions.GoogleAuthError)
+@app.exception_handler(kombu.exceptions.OperationalError)
+async def dependency_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    # Type only: GCS error messages contain object keys (user ids and filenames).
+    logger.warning("%s %s failed: %s", request.method, request.url.path, type(exc).__name__)
+    return JSONResponse(status_code=503, content={"detail": "A storage or queue service is unavailable; try again"})
+
 
 app.include_router(auth_router)
 app.include_router(api_v1_router)
