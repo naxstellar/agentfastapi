@@ -26,9 +26,11 @@ from app.agent.graph import Persistence, build_agent, run_config
 from app.agent.history import TurnRecorder, save_assistant_message
 from app.agent.models import ModelNotConfiguredError, UnknownModelError, make_chat_model
 from app.agent.sandbox import SandboxManager
+from app.agent.usage import UsageCallback
 from app.config import RUN_TIME_LIMIT_S
 from app.models_agent import Conversation, Message, Run
-from app.services import events, run_guard
+from app.services import events, quota, run_guard
+from app.services.quota import Quota
 from app.services.storage import Storage
 
 logger = logging.getLogger("app.workers.runner")
@@ -57,6 +59,11 @@ class RunDeps:
     model_factory: Callable[[str], BaseChatModel] = make_chat_model
     cancel_poll_s: float = CANCEL_POLL_S
     run_time_limit_s: float = RUN_TIME_LIMIT_S
+    quota: Quota | None = None  # defaults to one on guard_client
+
+    def __post_init__(self) -> None:
+        if self.quota is None:
+            self.quota = Quota(self.guard_client, self.session_factory)
 
 
 @dataclass
@@ -103,8 +110,11 @@ def _mark_running(deps: RunDeps, run_id: uuid.UUID) -> bool:
         return result.rowcount == 1
 
 
-def _finalize_db(deps: RunDeps, run: Run, outcome: Outcome, content: dict | None) -> bool:
-    """Writes the terminal status and the display message once. False if another delivery already finished it."""
+def _finalize_db(
+    deps: RunDeps, run: Run, outcome: Outcome, content: dict | None, usage: tuple[int, int] = (0, 0)
+) -> bool:
+    """Writes the terminal status, the display message and the run's token usage once. False if another delivery
+    already finished it."""
     with deps.session_factory() as db:
         result = db.execute(
             update(Run)
@@ -117,6 +127,7 @@ def _finalize_db(deps: RunDeps, run: Run, outcome: Outcome, content: dict | None
             return False
         if content and (content.get("text") or content.get("tools")):
             save_assistant_message(db, run.conversation_id, run.id, content)
+        quota.rollup_run(db, run.id, run.user_id, *usage)
         db.commit()
         return True
 
@@ -137,6 +148,9 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
         deps.model_factory(model_id), checkpointer=deps.persistence.checkpointer, store=deps.persistence.store
     )
     config = run_config(run.conversation_id, run.id)
+    # Callbacks in the config reach every LLM call of the run, the summarizer's included.
+    usage = UsageCallback(deps.quota, deps.events_client, run.user_id, run.id, quota.DAILY_TOKEN_BUDGET)
+    config["callbacks"] = [usage]
     context = make_context(
         user_id=run.user_id,
         conversation_id=run.conversation_id,
@@ -190,6 +204,8 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
     finally:
         with suppress(Exception):
             await tokens.flush()
+        with suppress(Exception):
+            await usage.charge_unfinished()  # a call cut short by cancel/timeout is still billed
 
 
 class _TokenBuffer:
@@ -368,7 +384,12 @@ async def _publish_final(deps: RunDeps, run: Run, outcome: Outcome) -> None:
 
 async def _finish_run(deps: RunDeps, run: Run, outcome: Outcome, recorder: TurnRecorder) -> None:
     try:
-        won = await asyncio.to_thread(_finalize_db, deps, run, outcome, recorder.content())
+        try:
+            usage = await asyncio.to_thread(deps.quota.run_usage, run.id)
+        except Exception as exc:  # Redis down: finish the run anyway; its tokens go unrecorded
+            logger.warning("Reading usage of run id=%s failed: %s", run.id, type(exc).__name__)
+            usage = (0, 0)
+        won = await asyncio.to_thread(_finalize_db, deps, run, outcome, recorder.content(), usage)
         if won:
             await _publish_final(deps, run, outcome)
     finally:

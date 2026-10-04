@@ -1,6 +1,7 @@
 import re
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,7 @@ from app.db import DbSessionDep
 from app.models_agent import Conversation, Run
 from app.redis_client import redis_client
 from app.services import events, run_guard
+from app.services.quota import Quota
 from app.workers.runner import ACTIVE_STATUSES, CANCEL_FLAG_TTL_S, TERMINAL_STATUSES, cancel_key
 from app.workers.tasks import run_agent
 
@@ -61,6 +63,15 @@ def create_run(conversation_id: uuid.UUID, body: RunCreate, db: DbSessionDep, us
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # The quota gate only applies to new runs; a run already in flight (or resuming after approval) isn't cut off.
+    status = Quota(redis_client, lambda: nullcontext(db)).status(user.id)
+    if status.exceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="Daily token budget used up; it resets at midnight UTC",
+            headers={"Retry-After": str(status.retry_after_s)},
+        )
 
     run_id = uuid.uuid4()
     admission = run_guard.acquire(redis_client, user.id, conversation_id, run_id)

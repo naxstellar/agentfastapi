@@ -338,11 +338,11 @@ async def test_finalize_failure_fails_the_run(db, make_deps, new_run, fake_redis
     real = runner._finalize_db
     calls = []
 
-    def flaky(deps, run_, outcome, content):
-        calls.append(outcome.status)
+    def flaky(*args):
+        calls.append(args[2].status)
         if len(calls) == 1:
             raise RuntimeError("postgres blip")
-        return real(deps, run_, outcome, content)
+        return real(*args)
 
     monkeypatch.setattr(runner, "_finalize_db", flaky)
     await execute_run(make_deps(code_then_answer), run.id)

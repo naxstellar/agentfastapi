@@ -41,6 +41,7 @@ import app.auth.redis_state  # noqa: E402
 import app.auth.session_store  # noqa: E402
 import app.redis_client  # noqa: E402
 import app.routers.runs  # noqa: E402
+import app.routers.usage  # noqa: E402
 import app.workers.datasets  # noqa: E402
 from app.auth.security import get_current_user  # noqa: E402
 from app.config import DATABASE_URL, SESSION_SECRET_KEY  # noqa: E402
@@ -121,7 +122,7 @@ def db(db_engine):
 def fake_redis(monkeypatch):
     client = fakeredis.FakeRedis(decode_responses=True)
     # Every module that does `from app.redis_client import redis_client` needs patching.
-    for module in (app.redis_client, app.auth.session_store, app.auth.redis_state, app.workers.datasets, app.routers.runs):
+    for module in (app.redis_client, app.auth.session_store, app.auth.redis_state, app.workers.datasets, app.routers.runs, app.routers.usage):
         monkeypatch.setattr(module, "redis_client", client)
     return client
 
