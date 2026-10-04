@@ -17,6 +17,7 @@ from app.config import SESSION_SECRET_KEY
 from app.db import Base, engine
 from app.redis_client import async_redis_client
 from app.routers.api_v1 import router as api_v1_router
+from app.services.events import api_events_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 logger = logging.getLogger("app")
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     yield
     await async_redis_client.aclose()
+    await api_events_client().aclose()
 
 
 app = FastAPI(lifespan=lifespan)

@@ -2,7 +2,7 @@ from celery import Celery
 
 from app.config import CELERY_BROKER_URL, RUN_TIME_LIMIT_S
 
-celery_app = Celery("agentfastapi", broker=CELERY_BROKER_URL, include=["app.workers.datasets"])
+celery_app = Celery("agentfastapi", broker=CELERY_BROKER_URL, include=["app.workers.datasets", "app.workers.tasks"])
 celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
