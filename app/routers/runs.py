@@ -19,6 +19,7 @@ from app.auth.security import DbUserDep
 from app.db import DbSessionDep
 from app.models_agent import Conversation, Run
 from app.redis_client import redis_client
+from app.routers.conversations import auto_title
 from app.services import approvals, events, run_guard
 from app.services.quota import Quota
 from app.workers.runner import ACTIVE_STATUSES, CANCEL_FLAG_TTL_S, TERMINAL_STATUSES, cancel_key
@@ -97,6 +98,8 @@ def create_run(conversation_id: uuid.UUID, body: RunCreate, db: DbSessionDep, us
             raise HTTPException(status_code=409, detail="This conversation already has a run in progress")
         run = Run(id=run_id, conversation_id=conversation_id, user_id=user.id, status="queued", celery_task_id=str(run_id))
         db.add(run)
+        if conversation.title is None:
+            conversation.title = auto_title(body.text)
         add_user_message(db, conversation_id, run_id, body.text)
         db.commit()
     except BaseException:

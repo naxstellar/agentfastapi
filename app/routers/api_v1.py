@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 
 from app.auth.security import CurrentUserDep, get_current_user, require_csrf_header
+from app.routers.artifacts import router as artifacts_router
+from app.routers.conversations import router as conversations_router
 from app.routers.datasets import router as datasets_router
 from app.routers.memories import router as memories_router
 from app.routers.settings import router as settings_router
@@ -19,6 +21,8 @@ def read_me(user: CurrentUserDep) -> dict:
 
 
 router.include_router(datasets_router)
+router.include_router(conversations_router)
+router.include_router(artifacts_router)
 router.include_router(runs_router)
 router.include_router(usage_router)
 router.include_router(memories_router)
