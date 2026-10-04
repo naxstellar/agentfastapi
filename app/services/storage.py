@@ -150,3 +150,10 @@ def get_storage() -> Storage:
     if not GCS_BUCKET:
         raise StorageNotConfiguredError("GCS_BUCKET is not set; see CLAUDE.md 'GCS setup'")
     return GcsStorage(GCS_BUCKET, GCS_SIGNER_SERVICE_ACCOUNT)
+
+class LazyStorage:
+    """Resolves get_storage() on first use, so a process without GCS credentials or GCS_BUCKET (the worker in a
+    cluster) still starts; only the calls that need storage fail, with the usual GCS/auth errors."""
+
+    def __getattr__(self, name: str):
+        return getattr(get_storage(), name)

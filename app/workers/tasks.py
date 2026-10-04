@@ -21,7 +21,7 @@ from app.db import SessionLocal
 from app.redis_client import redis_client
 from app.services import approvals
 from app.services.events import make_events_client
-from app.services.storage import get_storage
+from app.services.storage import LazyStorage
 from app.workers.celery_app import celery_app
 from app.workers.runner import RunDeps, execute_run, reap_idle_forever
 
@@ -55,7 +55,7 @@ class WorkerRuntime:
             self._deps = RunDeps(
                 persistence=persistence,
                 manager=manager,
-                storage=get_storage(),
+                storage=LazyStorage(),
                 events_client=make_events_client(),
                 guard_client=redis_client,
                 session_factory=self._session_factory,
