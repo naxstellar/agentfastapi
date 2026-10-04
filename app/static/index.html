@@ -3,58 +3,102 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
   <title>Data analyst</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    try {
+      var theme = localStorage.getItem("theme");
+      if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    } catch (e) { /* storage can be blocked */ }
+  </script>
 </head>
 <body>
   <section id="signin" class="signin" hidden>
-    <h1>Data analyst</h1>
-    <p>Sign in to chat with an agent that analyses your spreadsheets.</p>
-    <div class="row">
-      <a class="button primary" href="/loginuser">Login</a>
-      <a class="button" href="/register">Register</a>
+    <div class="signin-card">
+      <h1>Data analyst</h1>
+      <p>Sign in to chat with an agent that reads your spreadsheets, runs the analysis and shows you the charts.</p>
+      <div class="row">
+        <a class="button primary" href="/loginuser">Log in</a>
+        <a class="button" href="/register">Create account</a>
+      </div>
     </div>
   </section>
 
   <div id="app" class="layout" hidden>
-    <aside class="sidebar">
-      <button id="new-chat" class="primary wide" type="button">+ New chat</button>
-      <ul id="conversations" class="conv-list"></ul>
-      <button id="more-conversations" type="button" class="wide" hidden>Load more</button>
-      <div class="sidebar-foot">
-        <span id="user-name" class="muted"></span>
-        <button id="settings-open" type="button">Settings</button>
-        <button id="logout" type="button">Logout</button>
+    <aside class="sidebar" aria-label="Conversations">
+      <div class="sidebar-head">
+        <span class="brand">Data analyst</span>
       </div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <button id="nav-toggle" class="icon nav-toggle" type="button" aria-label="Conversations">☰</button>
-        <h2 id="conv-title">New chat</h2>
-        <select id="model" aria-label="Model"></select>
+      <button id="new-chat" class="new-chat" type="button">
+        <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        New chat
+      </button>
+      <ul id="conversations" class="conv-list"></ul>
+      <button id="more-conversations" type="button" class="quiet wide" hidden>Show more</button>
+      <div class="sidebar-foot">
         <div id="usage" class="usage" title="Daily token usage">
           <div class="usage-track"><div id="usage-bar" class="usage-bar"></div></div>
           <span id="usage-text" class="muted"></span>
         </div>
+        <div class="account">
+          <span id="user-name" class="account-name"></span>
+          <button id="settings-open" class="icon" type="button" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 5.5h8M15 5.5h2M3 14.5h2M9 14.5h8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="13" cy="5.5" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="7" cy="14.5" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          </button>
+          <button id="logout" class="icon" type="button" aria-label="Log out" title="Log out">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M8 4H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M12 7l3 3-3 3M15 10H8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+    <div id="scrim" class="scrim"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="nav-toggle" class="icon nav-toggle" type="button" aria-label="Conversations">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
+        <h2 id="conv-title">New chat</h2>
       </header>
 
       <div id="offline" class="banner bad" hidden>You're offline or the server is unreachable.</div>
       <div id="conn" class="banner" hidden>Reconnecting to the live run…</div>
 
-      <div id="messages" class="messages" aria-live="polite">
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <div id="empty" class="empty" hidden>
+        <h1>What are we looking into?</h1>
+        <p class="muted">Attach a spreadsheet and ask a question. The agent runs the analysis and shows its work.</p>
+        <div class="starters">
+          <button type="button" class="starter" data-prompt="Summarize my dataset: columns, missing values and anything odd.">Summarize my dataset</button>
+          <button type="button" class="starter" data-prompt="Plot the main trend over time and explain what it shows.">Plot the main trend</button>
+          <button type="button" class="starter" data-prompt="Find the outliers and tell me whether they look like errors.">Find the outliers</button>
+        </div>
       </div>
-      <button id="load-older" type="button" class="older" hidden>Load older messages</button>
+      <button id="load-older" type="button" class="older quiet" hidden>Load older messages</button>
 
       <div id="run-status" class="run-status" hidden></div>
-      <footer class="composer">
-        <div id="attached" class="attached"></div>
-        <div class="row">
-          <button id="datasets-open" type="button" title="Datasets">📎 Datasets</button>
-          <button id="files-open" type="button" title="Files the agent produced in this conversation">📁 Files</button>
-          <textarea id="input" rows="1" placeholder="Ask about your data"></textarea>
-          <button id="send" class="primary" type="button">Send</button>
-          <button id="cancel" type="button" class="danger" hidden>Stop</button>
+      <footer class="composer-wrap">
+        <div class="composer">
+          <div id="attached" class="attached"></div>
+          <textarea id="input" rows="1" placeholder="Ask about your data" aria-label="Message"></textarea>
+          <div class="toolbar">
+            <button id="datasets-open" class="icon" type="button" aria-label="Datasets" title="Datasets">
+              <svg viewBox="0 0 20 20" width="19" height="19" aria-hidden="true"><path d="M15.5 9.5l-5.6 5.6a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="files-open" class="icon" type="button" aria-label="Files the agent produced" title="Files the agent produced in this conversation">
+              <svg viewBox="0 0 20 20" width="19" height="19" aria-hidden="true"><path d="M3 6a1.5 1.5 0 0 1 1.5-1.5h3.2l1.6 1.8h5.7A1.5 1.5 0 0 1 17 7.8v6.7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            </button>
+            <span class="spacer"></span>
+            <select id="model" aria-label="Model"></select>
+            <button id="send" class="send" type="button" aria-label="Send">
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 16V4M5 9l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="cancel" type="button" class="send stop" aria-label="Stop" hidden>
+              <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor"/></svg>
+            </button>
+          </div>
         </div>
       </footer>
     </main>
@@ -78,6 +122,13 @@
     <div class="dialog-head"><h3>Settings</h3><button id="settings-close" class="icon" type="button" aria-label="Close">✕</button></div>
     <label class="field check"><input id="setting-approval" type="checkbox" /> Ask me before the agent runs code</label>
     <label class="field">Default model for new chats <select id="setting-model"></select></label>
+    <label class="field">Appearance
+      <select id="setting-theme">
+        <option value="system">Match my system</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
     <button id="settings-save" type="button" class="primary">Save</button>
     <h3>What the agent remembers</h3>
     <ul id="memories-list" class="plain-list"></ul>

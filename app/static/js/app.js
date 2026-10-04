@@ -48,12 +48,30 @@ function drawSidebar() {
       h(
         "li", { class: active ? "active" : "" },
         h("button", { class: "conv-title", type: "button", onclick: () => select(conversation.id) }, title(conversation)),
-        h("button", { class: "icon", type: "button", title: "Rename", onclick: () => rename(conversation) }, "✎"),
-        h("button", { class: "icon", type: "button", title: "Delete", onclick: () => remove(conversation) }, "🗑"),
+        h("button", { class: "icon conv-more", type: "button", "aria-label": "Conversation options", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (event) => openMenu(event, conversation) }, "⋯"),
       ),
     );
   });
   $("more-conversations").hidden = state.nextCursor === null;
+}
+
+function closeMenu() {
+  document.querySelectorAll(".menu").forEach((menu) => {
+    menu.previousElementSibling?.setAttribute("aria-expanded", "false");
+    menu.remove();
+  });
+}
+
+function openMenu(event, conversation) {
+  event.stopPropagation();
+  const button = event.currentTarget;
+  const wasOpen = button.getAttribute("aria-expanded") === "true";
+  closeMenu();
+  if (wasOpen) return;
+  button.setAttribute("aria-expanded", "true");
+  const item = (label, action, cls = "") =>
+    h("button", { type: "button", role: "menuitem", class: cls, onclick: () => (closeMenu(), action(conversation)) }, label);
+  button.after(h("div", { class: "menu", role: "menu" }, item("Rename", rename), item("Delete", remove, "danger")));
 }
 
 async function loadConversations(more = false) {
@@ -165,6 +183,29 @@ async function changeModel() {
   }
 }
 
+// ---- appearance -----------------------------------------------------------------------------
+
+function initTheme() {
+  const select = $("setting-theme");
+  let saved = "system";
+  try {
+    saved = localStorage.getItem("theme") || "system";
+  } catch {
+    /* storage can be blocked: the system theme applies */
+  }
+  select.value = saved;
+  select.addEventListener("change", () => {
+    const value = select.value;
+    if (value === "light" || value === "dark") document.documentElement.dataset.theme = value;
+    else delete document.documentElement.dataset.theme;
+    try {
+      localStorage.setItem("theme", value);
+    } catch {
+      /* per-viewer convenience only */
+    }
+  });
+}
+
 // ---- boot -----------------------------------------------------------------------------------
 
 const chat = new Chat({
@@ -212,6 +253,10 @@ async function boot() {
   $("model").addEventListener("change", changeModel);
   $("quota-close").addEventListener("click", () => $("quota-dialog").close());
   $("nav-toggle").addEventListener("click", () => document.body.classList.toggle("nav-open"));
+  $("scrim").addEventListener("click", () => document.body.classList.remove("nav-open"));
+  initTheme();
+  document.addEventListener("click", closeMenu);
+  document.addEventListener("keydown", (event) => event.key === "Escape" && closeMenu());
   onNetworkChange((online) => ($("offline").hidden = online));
 
   try {

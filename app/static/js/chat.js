@@ -9,6 +9,8 @@ const EVENT_TYPES = [
   "artifact", "approval_required", "usage", "done",
 ];
 
+const toolLabel = (name) => (name === "run_python" ? "code" : name.replace(/_/g, " "));
+
 export class Chat {
   constructor({ onUsage, onRunEnded, onActiveChange, ensureConversation, onQuotaExceeded }) {
     this.el = {
@@ -19,6 +21,7 @@ export class Chat {
       cancel: document.getElementById("cancel"),
       status: document.getElementById("run-status"),
       conn: document.getElementById("conn"),
+      empty: document.getElementById("empty"),
     };
     this.hooks = { onUsage, onRunEnded, onActiveChange, ensureConversation, onQuotaExceeded };
     this.conv = null;
@@ -39,6 +42,21 @@ export class Chat {
       }
     });
     this.el.input.addEventListener("input", () => this.autosize());
+    document.querySelectorAll(".starter").forEach((button) =>
+      button.addEventListener("click", () => {
+        this.el.input.value = button.dataset.prompt;
+        this.autosize();
+        this.el.input.focus();
+      }),
+    );
+    this.el.messages.addEventListener("click", (event) => {
+      const copy = event.target.closest(".copy");
+      if (!copy) return;
+      navigator.clipboard?.writeText(copy.parentElement.querySelector("code")?.textContent ?? "").then(() => {
+        copy.textContent = "Copied";
+        setTimeout(() => (copy.textContent = "Copy"), 1500);
+      });
+    });
     document.getElementById("files-open").addEventListener("click", () => this.showFiles());
     document.getElementById("files-close").addEventListener("click", () => document.getElementById("files-dialog").close());
   }
@@ -51,6 +69,18 @@ export class Chat {
     const input = this.el.input;
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+  }
+
+  // The greeting shows only while the conversation has nothing in it.
+  updateEmpty() {
+    this.el.empty.hidden = this.busy || this.el.messages.childElementCount > 0;
+  }
+
+  setMarkdown(el, text) {
+    el.innerHTML = renderMarkdown(text);
+    el.querySelectorAll("pre").forEach((pre) => {
+      if (!pre.querySelector(".copy")) pre.append(h("button", { class: "copy", type: "button" }, "Copy"));
+    });
   }
 
   // ---- opening a conversation -------------------------------------------------------------
@@ -82,6 +112,8 @@ export class Chat {
       if (active) this.attach(active.id, active.status);
     } catch (error) {
       if (gen === this.gen) toast(error.message);
+    } finally {
+      if (gen === this.gen) this.updateEmpty();
     }
   }
 
@@ -110,6 +142,7 @@ export class Chat {
     this.el.send.disabled = false;
     this.el.input.placeholder = busy ? "A run is in progress…" : "Ask about your data";
     this.hooks.onActiveChange(busy);
+    this.updateEmpty();
   }
 
   // ---- history ---------------------------------------------------------------------------
@@ -120,7 +153,7 @@ export class Chat {
       return h("div", { class: "msg user", dataset: { id: message.id } }, h("div", { class: "bubble" }, content.text || ""));
     }
     const bubble = h("div", { class: "bubble md" });
-    if (content.text) bubble.innerHTML = renderMarkdown(content.text);
+    if (content.text) this.setMarkdown(bubble, content.text);
     const extras = h("div", { class: "extras" });
     (content.tools || []).forEach((tool) =>
       extras.append(h("span", { class: `chip ${tool.ok ? "" : "bad"}` }, `${tool.ok ? "✓" : "✗"} ${tool.name}`)),
@@ -156,7 +189,7 @@ export class Chat {
 
   artifactEl(artifact) {
     const wrap = h("div", { class: "artifact" });
-    const link = h("button", { class: "linkish", type: "button" }, `⬇ Download ${artifact.filename}`);
+    const link = h("button", { type: "button", "aria-label": `Download ${artifact.filename}` }, "Download");
     link.addEventListener("click", () => this.download(artifact));
     const players = { image: "img", audio: "audio", video: "video" };
     const tag = players[artifact.kind];
@@ -171,7 +204,7 @@ export class Chat {
         .catch(() => {});
       wrap.append(media);
     }
-    wrap.append(link);
+    wrap.append(h("div", { class: "artifact-bar" }, h("span", { class: "artifact-name" }, artifact.filename), link));
     return wrap;
   }
 
@@ -343,7 +376,7 @@ export class Chat {
       segment.pending = true;
       requestAnimationFrame(() => {
         segment.pending = false;
-        segment.el.innerHTML = renderMarkdown(segment.raw);
+        this.setMarkdown(segment.el, segment.raw);
       });
     }
   }
@@ -355,12 +388,12 @@ export class Chat {
     const output = h("pre", { class: "tool-output" }, "Running…");
     const block = h(
       "details",
-      { class: "tool", open: name === "run_python" },
-      h("summary", {}, `🔧 ${name}`),
+      { class: "tool" },
+      h("summary", {}, `Running ${toolLabel(name)}…`),
       h("pre", { class: "tool-code" }, code),
       output,
     );
-    live.blocks.set(id, { block, output });
+    live.blocks.set(id, { block, output, name });
     live.root.append(block);
   }
 
@@ -369,7 +402,7 @@ export class Chat {
     if (entry) {
       entry.output.textContent = output || "(no output)";
       entry.block.classList.toggle("bad", Boolean(error));
-      entry.block.querySelector("summary").textContent += error ? " — failed" : " — done";
+      entry.block.querySelector("summary").textContent = error ? `${toolLabel(entry.name)} failed` : `Ran ${toolLabel(entry.name)}`;
     }
     if (this.live.approval && this.live.approval.id === id) this.dropApproval();
   }
