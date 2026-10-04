@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import sys
 import uuid
 from base64 import b64encode
 from pathlib import Path
@@ -46,6 +48,13 @@ from app.main import app as fastapi_app  # noqa: E402
 from app.models import User  # noqa: E402
 
 TEST_SUB = "auth0|test-user"
+
+
+def pytest_asyncio_loop_factories(config, item):
+    # psycopg's async mode (LangGraph's checkpointer and store) doesn't support Windows' default Proactor loop.
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return {"default": asyncio.new_event_loop}
 
 
 def make_schema_engine(schema: str):

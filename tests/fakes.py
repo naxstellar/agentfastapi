@@ -2,9 +2,14 @@ import ast
 import asyncio
 import io
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from google.api_core.exceptions import NotFound
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field
 
 from app.services.storage import SignedUrl
 
@@ -149,3 +154,24 @@ class FakeSandboxProvider:
     def expire(self, name: str) -> None:
         """Simulates the service deleting the sandbox when its TTL runs out."""
         self.sandboxes.pop(name, None)
+
+
+class ScriptedChatModel(BaseChatModel):
+    """A chat model whose reply is `responder(messages)`. Records every call's input messages.
+
+    bind_tools() returns the model itself, so the agent can "call tools" through scripted AIMessages.
+    """
+
+    responder: Callable[[list[BaseMessage]], AIMessage]
+    calls: list[list[BaseMessage]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        self.calls.append(list(messages))
+        return ChatResult(generations=[ChatGeneration(message=self.responder(list(messages)))])

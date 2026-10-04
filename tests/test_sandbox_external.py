@@ -22,6 +22,7 @@ from app.agent.sandbox import (
     SandboxManager,
     SandboxSlots,
 )
+from app.agent.tools import inspect_code
 from app.agent.workspace import RESET_NOTE, ConversationWorkspace
 from app.models_agent import Conversation, ConversationDataset, Dataset, Run
 from tests.fakes import FakeStorage
@@ -125,6 +126,27 @@ async def test_pandas_on_uploaded_xlsx_returns_chart_artifact(workspace_factory)
     # Files persist: the next call sees the dataset without it being sent again.
     again = await workspace.run_python("print(len(pd.read_excel('data/sales.xlsx')))")
     assert "3" in again.output and not again.artifacts
+
+
+async def test_inspect_dataset_code_runs_in_the_sandbox(workspace_factory):
+    """WP3's inspect_dataset snippet (pandas isn't installed locally, so this is its only real check)."""
+    workspace = workspace_factory()
+    xlsx = await workspace.run_python(inspect_code("data/sales.xlsx", None, 2))
+    assert not xlsx.is_error, xlsx.output
+    assert "sheets ['Sales']" in xlsx.output and "3 rows x 2 columns" in xlsx.output
+    assert "revenue" in xlsx.output and "int64" in xlsx.output and "Feb" in xlsx.output and "Mar" not in xlsx.output
+
+    # A semicolon-separated cp1252 CSV, as European Excel exports it.
+    await workspace.run_python(r"open('eu.csv', 'wb').write('name;amount\nCaf\xe9;1,5\nB\xe4r;2\n'.encode('cp1252'))")
+    csv = await workspace.run_python(inspect_code("eu.csv", None, 5))
+    assert not csv.is_error, csv.output
+    assert "separator ';'" in csv.output and "encoding cp1252" in csv.output and "Café" in csv.output
+
+    missing = await workspace.run_python(inspect_code("data/sales.xlsx", "Nope", 5))
+    assert missing.is_error and "No sheet named 'Nope'" in missing.output
+    # The helper never stays in the agent's namespace, even after a failure.
+    leaked = await workspace.run_python("print('_inspect_dataset' in globals())")
+    assert "False" in leaked.output
 
 
 async def test_sandbox_has_no_secrets_no_internet_and_no_metadata_server(workspace_factory):

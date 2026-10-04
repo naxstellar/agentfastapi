@@ -85,6 +85,8 @@ class SandboxDataset:
     gcs_key: str
     size_bytes: int
     path: str  # where it lives inside the sandbox, e.g. "data/sales.xlsx"
+    # From the dataset inspection: [{"name", "columns", "row_count", "rows_truncated"}, ...]
+    sheets: list[dict] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -348,7 +350,7 @@ class ConversationWorkspace:
         """The conversation's attached, ready datasets owned by the user, with their sandbox paths."""
         with self._session_factory() as db:
             rows = db.execute(
-                select(Dataset.id, Dataset.filename, Dataset.gcs_key, Dataset.size_bytes)
+                select(Dataset.id, Dataset.filename, Dataset.gcs_key, Dataset.size_bytes, Dataset.sheets)
                 .join(ConversationDataset, ConversationDataset.dataset_id == Dataset.id)
                 .where(
                     ConversationDataset.conversation_id == self.conversation_id,
@@ -358,7 +360,10 @@ class ConversationWorkspace:
                 .order_by(Dataset.created_at, Dataset.id)
             ).all()
         paths = sandbox_paths([(row.id, row.filename) for row in rows])
-        return [SandboxDataset(row.id, row.filename, row.gcs_key, row.size_bytes, paths[row.id]) for row in rows]
+        return [
+            SandboxDataset(row.id, row.filename, row.gcs_key, row.size_bytes, paths[row.id], row.sheets)
+            for row in rows
+        ]
 
     # --- conversation.sandbox_id ----------------------------------------------------------------------
 

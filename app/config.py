@@ -58,6 +58,10 @@ ALLOWED_MODELS = [
     ).split(",")
     if m.strip()
 ]
+MODEL_PROVIDERS = ("anthropic", "openai")
+for _model in ALLOWED_MODELS:
+    if _model.partition(":")[0] not in MODEL_PROVIDERS or not _model.partition(":")[2]:
+        raise RuntimeError(f"ALLOWED_MODELS entry {_model!r} must look like <{'|'.join(MODEL_PROVIDERS)}>:<model>")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL") or ALLOWED_MODELS[0]
 if DEFAULT_MODEL not in ALLOWED_MODELS:
     raise RuntimeError(f"DEFAULT_MODEL {DEFAULT_MODEL!r} is not in ALLOWED_MODELS")
