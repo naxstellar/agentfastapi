@@ -7,3 +7,6 @@ env/
 .claude/settings.local.json
 .playwright-mcp/
 .claude/chime.wav
+
+logs/
+.run/

@@ -1,0 +1,75 @@
+# Celery worker and beat: the same image as the api (one image, different command).
+# No GCS / Agent Engine credentials exist in this cluster (ADC lives on the laptop), so dataset processing and
+# run_python fail here; runs that need neither (plain chat) work.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: agentfastapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: agentfastapi-api:local
+          imagePullPolicy: Never
+          command: [celery, -A, app.workers.celery_app, worker, --pool=threads, --concurrency=4, --loglevel=INFO]
+          envFrom:
+            - secretRef:
+                name: agentfastapi-secrets
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentfastapi-postgres
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              value: redis://redis:6379/0
+          livenessProbe:
+            exec:
+              command: [sh, -c, "celery -A app.workers.celery_app inspect ping -d celery@$HOSTNAME"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 15
+---
+# Exactly one beat: it schedules agent.expire_approvals. Recreate, so a rollout never runs two at once.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat
+  namespace: agentfastapi
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: beat
+  template:
+    metadata:
+      labels:
+        app: beat
+    spec:
+      containers:
+        - name: beat
+          image: agentfastapi-api:local
+          imagePullPolicy: Never
+          command: [celery, -A, app.workers.celery_app, beat, --loglevel=INFO, --schedule, /tmp/celerybeat-schedule]
+          envFrom:
+            - secretRef:
+                name: agentfastapi-secrets
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentfastapi-postgres
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              value: redis://redis:6379/0

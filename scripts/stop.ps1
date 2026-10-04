@@ -55,6 +55,18 @@ if (-not $killedAny) {
     Write-Host "No host-run uvicorn process found listening on port $Port."
 }
 
+foreach ($name in @("worker", "beat")) {
+    $pidFile = Join-Path $ProjectRoot ".run\$name.pid"
+    if (Test-Path $pidFile) {
+        $rootPid = [int](Get-Content $pidFile)
+        if (Get-Process -Id $rootPid -ErrorAction SilentlyContinue) {
+            Write-Host "Stopping $name (PID $rootPid) and its process tree."
+            Stop-ProcessTree -RootProcessId $rootPid | Out-Null
+        }
+        Remove-Item $pidFile -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host "Stopping Postgres + Redis + api (if running) containers..."
 # --profile full is passed unconditionally so `down` also tears down the api container when
 # it was started via the full-Docker-profile workflow -- `docker compose down` alone ignores

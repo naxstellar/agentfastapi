@@ -32,6 +32,7 @@ from app.agent.sandbox import SandboxManager
 from app.agent.usage import UsageCallback
 from app.config import RUN_TIME_LIMIT_S
 from app.models_agent import Conversation, Message, Run, UserSettings
+from app.observability import bind_run
 from app.services import approvals, events, quota, run_guard
 from app.services.quota import Quota
 from app.services.storage import Storage
@@ -424,6 +425,7 @@ async def _execute(deps: RunDeps, run_id: uuid.UUID, decision: dict | None = Non
         logger.warning("Run id=%s no longer exists", run_id)
         return
     run, model_id, text = loaded
+    bind_run(run.id, run.user_id)
 
     if run.status in TERMINAL_STATUSES:  # redelivered after it finished
         await _ensure_done_event(deps, run)
@@ -518,6 +520,11 @@ async def _finish_run(deps: RunDeps, run: Run, outcome: Outcome, recorder: TurnR
             usage = (0, 0)
         won = await asyncio.to_thread(_finalize_db, deps, run, outcome, recorder.content(), usage)
         if won:
+            started = run.started_at or run.created_at
+            logger.info(
+                "Run finished status=%s duration_s=%.1f input_tokens=%d output_tokens=%d",
+                outcome.status, (_utcnow() - started).total_seconds(), usage[0], usage[1],
+            )
             await _publish_final(deps, run, outcome)
     finally:
         await asyncio.to_thread(run_guard.release, deps.guard_client, run.user_id, run.conversation_id, run.id)

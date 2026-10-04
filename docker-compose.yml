@@ -31,5 +31,32 @@ services:
     volumes:
       - ./certs:/app/certs:ro
 
+  # Same image as api; no GCS/Agent Engine credentials inside a container (ADC lives on the laptop), so datasets
+  # and run_python only work in the host-run worker (scripts/start.ps1).
+  worker:
+    build: .
+    profiles: ["full"]
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--pool=threads", "--concurrency=4", "--loglevel=INFO"]
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - env/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+
+  beat:
+    build: .
+    profiles: ["full"]
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=INFO"]
+    depends_on:
+      - redis
+    env_file:
+      - env/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+
 volumes:
   pgdata:

@@ -85,12 +85,16 @@ Write-Host "Applying manifests..."
 kubectl apply -f k8s/postgres.yaml
 kubectl apply -f k8s/redis.yaml
 kubectl apply -f k8s/api.yaml
+kubectl apply -f k8s/worker.yaml
 
 # Re-running this script rebuilds and reloads the image under the same tag, but an unchanged
 # Deployment spec won't make Kubernetes pick it up on its own -- force it.
-Write-Host "Restarting the api deployment so it picks up the freshly loaded image..."
+Write-Host "Restarting the api, worker and beat deployments so they pick up the freshly loaded image..."
 kubectl rollout restart deployment/api -n agentfastapi
+kubectl rollout restart deployment/worker deployment/beat -n agentfastapi
 kubectl rollout status deployment/api -n agentfastapi --timeout=120s
+kubectl rollout status deployment/worker -n agentfastapi --timeout=180s
+kubectl rollout status deployment/beat -n agentfastapi --timeout=120s
 
 Write-Host "Done. Check status with: kubectl get pods -n agentfastapi"
 Write-Host "Once the LoadBalancer is ready, the app is reachable at https://127.0.0.1:8000/"
