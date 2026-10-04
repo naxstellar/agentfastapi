@@ -1,5 +1,6 @@
 """WP6C: code approvals — pause, approve/edit/reject, resume of the same run, quota and concurrency, expiry, settings."""
 
+import app.config
 import time
 import uuid
 
@@ -237,10 +238,12 @@ async def test_a_paused_conversation_refuses_new_runs(authed_client, db, approva
 
 
 async def test_settings_roundtrip(authed_client, user):
-    assert (await authed_client.get("/api/v1/settings")).json() == {"require_code_approval": False, "default_model": None}
+    models = list(app.config.ALLOWED_MODELS)
+    assert (await authed_client.get("/api/v1/settings")).json() == {
+        "require_code_approval": False, "default_model": None, "allowed_models": models}
     body = {"require_code_approval": True, "default_model": None}
-    assert (await authed_client.put("/api/v1/settings", json=body, headers=CSRF)).json() == body
-    assert (await authed_client.get("/api/v1/settings")).json() == body
+    assert (await authed_client.put("/api/v1/settings", json=body, headers=CSRF)).json() == {**body, "allowed_models": models}
+    assert (await authed_client.get("/api/v1/settings")).json() == {**body, "allowed_models": models}
     bad = {"require_code_approval": True, "default_model": "openai:not-allowed"}
     assert (await authed_client.put("/api/v1/settings", json=bad, headers=CSRF)).status_code == 422
 

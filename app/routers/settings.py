@@ -14,6 +14,7 @@ router = APIRouter(tags=["settings"])
 class SettingsOut(BaseModel):
     require_code_approval: bool = False
     default_model: str | None = None
+    allowed_models: list[str] = []  # read-only: what default_model (and a conversation's model) may be
 
 
 class SettingsIn(BaseModel):
@@ -21,10 +22,18 @@ class SettingsIn(BaseModel):
     default_model: str | None = None
 
 
+def _out(row: UserSettings | None) -> SettingsOut:
+    return SettingsOut(
+        require_code_approval=row.require_code_approval if row else False,
+        default_model=row.default_model if row else None,
+        allowed_models=list(ALLOWED_MODELS),
+    )
+
+
 @router.get("/settings")
 def get_settings(db: DbSessionDep, user: DbUserDep) -> SettingsOut:
     row = db.get(UserSettings, user.id)
-    return SettingsOut(require_code_approval=row.require_code_approval, default_model=row.default_model) if row else SettingsOut()
+    return _out(row)
 
 
 @router.put("/settings")
@@ -38,4 +47,4 @@ def put_settings(body: SettingsIn, db: DbSessionDep, user: DbUserDep) -> Setting
     row.require_code_approval = body.require_code_approval
     row.default_model = body.default_model
     db.commit()
-    return SettingsOut(require_code_approval=row.require_code_approval, default_model=row.default_model)
+    return _out(row)

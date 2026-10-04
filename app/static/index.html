@@ -2,124 +2,84 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>FastAPI over HTTPS</title>
-  <style>
-    body {
-      font-family: system-ui, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      background: #0f172a;
-      color: #f1f5f9;
-      gap: 1rem;
-    }
-    h1 { font-size: 2rem; margin-bottom: 0; }
-    p { color: #94a3b8; margin: 0; }
-    .actions { display: flex; gap: 0.5rem; }
-    button, a.button {
-      font: inherit;
-      padding: 0.5rem 1rem;
-      border-radius: 6px;
-      border: 1px solid #334155;
-      background: #1e293b;
-      color: #f1f5f9;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    button:hover, a.button:hover { background: #334155; }
-    .indicator { display: flex; align-items: center; gap: 0.5rem; font-size: 0.95rem; }
-    .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #64748b; }
-    .dot.signed-in { background: #22c55e; }
-    pre {
-      background: #1e293b;
-      padding: 1rem;
-      border-radius: 8px;
-      max-width: 80vw;
-      overflow-x: auto;
-      white-space: pre-wrap;
-    }
-    code {
-      background: #1e293b;
-      padding: 0.2rem 0.4rem;
-      border-radius: 4px;
-    }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Data analyst</title>
+  <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <h1>🔒 It works!</h1>
+  <section id="signin" class="signin" hidden>
+    <h1>Data analyst</h1>
+    <p>Sign in to chat with an agent that analyses your spreadsheets.</p>
+    <div class="row">
+      <a class="button primary" href="/loginuser">Login</a>
+      <a class="button" href="/register">Register</a>
+    </div>
+  </section>
 
-  <div class="indicator">
-    <span id="dot" class="dot"></span>
-    <span id="status">Checking session&hellip;</span>
+  <div id="app" class="layout" hidden>
+    <aside class="sidebar">
+      <button id="new-chat" class="primary wide" type="button">+ New chat</button>
+      <ul id="conversations" class="conv-list"></ul>
+      <button id="more-conversations" type="button" class="wide" hidden>Load more</button>
+      <div class="sidebar-foot">
+        <span id="user-name" class="muted"></span>
+        <button id="settings-open" type="button">Settings</button>
+        <button id="logout" type="button">Logout</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="nav-toggle" class="icon nav-toggle" type="button" aria-label="Conversations">☰</button>
+        <h2 id="conv-title">New chat</h2>
+        <select id="model" aria-label="Model"></select>
+        <div id="usage" class="usage" title="Daily token usage">
+          <div class="usage-track"><div id="usage-bar" class="usage-bar"></div></div>
+          <span id="usage-text" class="muted"></span>
+        </div>
+      </header>
+
+      <div id="offline" class="banner bad" hidden>You're offline or the server is unreachable.</div>
+      <div id="conn" class="banner" hidden>Reconnecting to the live run…</div>
+
+      <div id="messages" class="messages" aria-live="polite">
+      </div>
+      <button id="load-older" type="button" class="older" hidden>Load older messages</button>
+
+      <div id="run-status" class="run-status" hidden></div>
+      <footer class="composer">
+        <div id="attached" class="attached"></div>
+        <div class="row">
+          <button id="datasets-open" type="button" title="Datasets">📎 Datasets</button>
+          <textarea id="input" rows="1" placeholder="Ask about your data"></textarea>
+          <button id="send" class="primary" type="button">Send</button>
+          <button id="cancel" type="button" class="danger" hidden>Stop</button>
+        </div>
+      </footer>
+    </main>
   </div>
 
-  <div class="actions">
-    <a id="login-btn" class="button" href="/loginuser" style="display:none">Login</a>
-    <a id="register-btn" class="button" href="/register" style="display:none">Register</a>
-    <button id="logout" style="display:none">Logout</button>
-    <button id="test-api" style="display:none">Call /api/v1/me</button>
-  </div>
+  <dialog id="datasets-dialog">
+    <div class="dialog-head"><h3>Datasets</h3><button id="datasets-close" class="icon" type="button" aria-label="Close">✕</button></div>
+    <p class="muted">Attached datasets are available to the agent in this conversation.</p>
+    <button id="upload-btn" type="button" class="primary">Upload file</button>
+    <input id="file-input" type="file" accept=".csv,.xlsx,.xls" multiple hidden />
+    <ul id="datasets-list" class="plain-list"></ul>
+  </dialog>
 
-  <pre id="result" style="display:none"></pre>
+  <dialog id="settings-dialog">
+    <div class="dialog-head"><h3>Settings</h3><button id="settings-close" class="icon" type="button" aria-label="Close">✕</button></div>
+    <label class="field check"><input id="setting-approval" type="checkbox" /> Ask me before the agent runs code</label>
+    <label class="field">Default model for new chats <select id="setting-model"></select></label>
+    <button id="settings-save" type="button" class="primary">Save</button>
+    <h3>What the agent remembers</h3>
+    <ul id="memories-list" class="plain-list"></ul>
+  </dialog>
 
-  <p>Public JSON endpoint: <code>/api/hello</code></p>
+  <div id="toast" class="toast" role="status" hidden></div>
 
-  <script>
-    const dotEl = document.getElementById("dot");
-    const statusEl = document.getElementById("status");
-    const loginBtn = document.getElementById("login-btn");
-    const registerBtn = document.getElementById("register-btn");
-    const logoutBtn = document.getElementById("logout");
-    const testBtn = document.getElementById("test-api");
-    const resultEl = document.getElementById("result");
-
-    // All /api/v1 calls go through this: state-changing requests are rejected (403) without X-Requested-With.
-    function apiFetch(url, options = {}) {
-      const headers = new Headers(options.headers);
-      headers.set("X-Requested-With", "fetch");
-      return fetch(url, { ...options, headers });
-    }
-
-    async function loadSession() {
-      const res = await fetch("/session-info");
-      const info = await res.json();
-
-      if (info.authenticated) {
-        dotEl.classList.add("signed-in");
-        statusEl.textContent = `Signed in as ${info.name || info.email || "user"}`;
-        logoutBtn.style.display = "inline-block";
-        testBtn.style.display = "inline-block";
-        loginBtn.style.display = "none";
-        registerBtn.style.display = "none";
-      } else {
-        statusEl.textContent = "Not signed in";
-        loginBtn.style.display = "inline-block";
-        registerBtn.style.display = "inline-block";
-        logoutBtn.style.display = "none";
-        testBtn.style.display = "none";
-      }
-    }
-
-    loadSession();
-
-    logoutBtn.addEventListener("click", () => {
-      window.location.href = "/logout";
-    });
-
-    testBtn.addEventListener("click", async () => {
-      resultEl.style.display = "block";
-      resultEl.textContent = "Loading...";
-      try {
-        const res = await apiFetch("/api/v1/me");
-        const body = await res.json();
-        resultEl.textContent = `${res.status}\n${JSON.stringify(body, null, 2)}`;
-      } catch (err) {
-        resultEl.textContent = `Request failed: ${err}`;
-      }
-    });
-  </script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

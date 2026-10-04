@@ -1,3 +1,4 @@
+import mimetypes
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -40,6 +41,9 @@ app.add_middleware(
     same_site="lax",
     https_only=True,
 )
+
+# Windows maps .js to text/plain via the registry, and browsers refuse such ES modules.
+mimetypes.add_type("text/javascript", ".js")
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

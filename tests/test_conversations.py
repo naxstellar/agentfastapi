@@ -224,3 +224,44 @@ async def test_artifact_download_url_is_owner_only(api, alice, db, storage, make
     assert ok.status_code == 200 and ok.json()["method"] == "GET"
     login_as(make_user("auth0|bob-art"))
     assert (await api.get(f"{API}/artifacts/{artifact.id}")).status_code == 404
+
+
+async def test_attached_datasets_listing_is_per_conversation_and_owner_only(api, alice, db, make_user, login_as):
+    conv, other = await create(api), await create(api)
+    dataset = Dataset(user_id=alice.id, filename="a.csv", gcs_key="users/x/a.csv", size_bytes=1, content_type="text/csv", status="ready")
+    db.add(dataset)
+    db.flush()
+    db.add(ConversationDataset(conversation_id=uuid.UUID(conv["id"]), dataset_id=dataset.id))
+    db.flush()
+    attached = (await api.get(f"{API}/conversations/{conv['id']}/datasets")).json()
+    assert [d["filename"] for d in attached] == ["a.csv"]
+    assert (await api.get(f"{API}/conversations/{other['id']}/datasets")).json() == []
+    login_as(make_user("auth0|bob-ds"))
+    assert (await api.get(f"{API}/conversations/{conv['id']}/datasets")).status_code == 404
+
+
+async def test_active_run_endpoint(api, alice, db, make_user, login_as):
+    conv = await create(api)
+    cid = uuid.UUID(conv["id"])
+    assert (await api.get(f"{API}/conversations/{conv['id']}/active-run")).json() is None
+    db.add(Run(conversation_id=cid, user_id=alice.id, status="succeeded"))
+    paused = Run(conversation_id=cid, user_id=alice.id, status="awaiting_approval")
+    db.add(paused)
+    db.flush()
+    body = (await api.get(f"{API}/conversations/{conv['id']}/active-run")).json()
+    assert body["id"] == str(paused.id) and body["status"] == "awaiting_approval"
+    login_as(make_user("auth0|bob-run"))
+    assert (await api.get(f"{API}/conversations/{conv['id']}/active-run")).status_code == 404
+
+
+async def test_settings_lists_allowed_models(api, alice):
+    body = (await api.get(f"{API}/settings")).json()
+    assert body["allowed_models"] and body["default_model"] is None
+    saved = (await api.put(f"{API}/settings", json={"require_code_approval": True}, headers=CSRF)).json()
+    assert saved["allowed_models"] == body["allowed_models"]
+
+
+async def test_static_modules_are_served_as_javascript(api):
+    for path in ("/static/js/app.js", "/static/vendor/marked.min.js"):
+        response = await api.get(path)
+        assert response.status_code == 200 and "javascript" in response.headers["content-type"]

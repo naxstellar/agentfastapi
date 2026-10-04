@@ -119,6 +119,21 @@ def create_run(conversation_id: uuid.UUID, body: RunCreate, db: DbSessionDep, us
     return RunOut.model_validate(run)
 
 
+@router.get("/conversations/{conversation_id}/active-run")
+def active_run(conversation_id: uuid.UUID, db: DbSessionDep, user: DbUserDep) -> RunOut | None:
+    """The conversation's queued/running/paused run, if any (so a reloaded page can reattach to its stream)."""
+    owned = db.scalar(select(Conversation.id).where(Conversation.id == conversation_id, Conversation.user_id == user.id))
+    if owned is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    run = db.scalar(
+        select(Run)
+        .where(Run.conversation_id == conversation_id, Run.status.in_((*ACTIVE_STATUSES, "awaiting_approval")))
+        .order_by(Run.created_at.desc())
+        .limit(1)
+    )
+    return RunOut.model_validate(run) if run else None
+
+
 @router.get("/runs/{run_id}")
 def get_run(run_id: uuid.UUID, db: DbSessionDep, user: DbUserDep) -> RunOut:
     return RunOut.model_validate(_owned_run(db, user.id, run_id))

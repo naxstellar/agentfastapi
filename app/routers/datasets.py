@@ -201,6 +201,18 @@ def delete_dataset(dataset_id: uuid.UUID, user: DbUserDep, db: DbSessionDep, sto
     db.commit()
 
 
+@router.get("/conversations/{conversation_id}/datasets")
+def list_attached_datasets(conversation_id: uuid.UUID, user: DbUserDep, db: DbSessionDep) -> list[DatasetOut]:
+    conversation = _owned_conversation(db, user, conversation_id)
+    datasets = db.scalars(
+        select(Dataset)
+        .join(ConversationDataset, ConversationDataset.dataset_id == Dataset.id)
+        .where(ConversationDataset.conversation_id == conversation.id, Dataset.user_id == user.id)
+        .order_by(Dataset.created_at)
+    ).all()
+    return [DatasetOut.model_validate(d) for d in datasets]
+
+
 @router.post("/conversations/{conversation_id}/datasets", status_code=204)
 def attach_dataset(conversation_id: uuid.UUID, body: AttachDataset, user: DbUserDep, db: DbSessionDep) -> None:
     conversation = _owned_conversation(db, user, conversation_id)
