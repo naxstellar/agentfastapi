@@ -82,6 +82,7 @@ class Outcome:
     error: str | None = None
     code: str | None = None
     approvals: list[dict] | None = None  # for a pause: [{tool_call_id, code}, ...]
+    interrupt_ids: list[str] | None = None
 
 
 def _utcnow() -> datetime:
@@ -161,8 +162,8 @@ def _wants_approval(deps: RunDeps, user_id: uuid.UUID) -> bool:
 
 async def _stream(
     deps: RunDeps, run: Run, model_id: str, text: str, recorder: TurnRecorder, decision: dict | None = None
-) -> list[dict] | None:
-    """Streams the agent. Returns the pending code approvals if the run paused for them, else None."""
+):
+    """Streams the agent. Returns the state snapshot if the run paused for code approvals, else None."""
     # A resumed run needs the approval step in its graph whatever the setting is now (its checkpoint is paused there).
     require_approval = decision is not None or await asyncio.to_thread(_wants_approval, deps, run.user_id)
     agent = build_agent(
@@ -191,7 +192,9 @@ async def _stream(
     resumed = (snapshot.metadata or {}).get("run_id") == str(run.id)
     if resumed:
         _seed_from_checkpoint(recorder, snapshot.values.get("messages", []), run.id)
-        if decision is not None and snapshot.interrupts:  # the user answered a code approval
+        current = [i.id for i in snapshot.interrupts]
+        # The decision answers one specific pause: after a crash and redelivery the run may be paused on new code.
+        if decision is not None and snapshot.interrupts and decision.get("interrupt_ids") in (None, current):  # the user answered a code approval
             reason = "approval"
             graph_input = Command(resume={"decisions": decisions_for(decision, snapshot.interrupts)})
         else:  # a redelivery (a stale `decision` whose pause was already answered is one too)
@@ -240,7 +243,7 @@ async def _stream(
         with suppress(Exception):
             await usage.charge_unfinished()  # a call cut short by cancel/timeout is still billed
     if interrupted:
-        return pending_approvals(await agent.aget_state(config))
+        return await agent.aget_state(config)
     return None
 
 
@@ -315,6 +318,13 @@ def _close_dangling_tool_calls(messages: list) -> list[ToolMessage]:
     ]
 
 
+async def _seed_recorder(deps: RunDeps, run: Run, recorder: TurnRecorder) -> None:
+    """Fills the recorder from the checkpoint, for a run that finishes without streaming (cancelled while paused)."""
+    saved = await deps.persistence.checkpointer.aget_tuple({"configurable": {"thread_id": str(run.conversation_id)}})
+    if saved is not None and (saved.metadata or {}).get("run_id") == str(run.id):
+        _seed_from_checkpoint(recorder, saved.checkpoint.get("channel_values", {}).get("messages", []), run.id)
+
+
 def _seed_from_checkpoint(recorder: TurnRecorder, messages: list, run_id: uuid.UUID) -> None:
     """On redelivery the recorder only sees post-resume updates; rebuild the earlier part of this run's turn."""
     marker = f"run-{run_id}"
@@ -357,8 +367,12 @@ async def _run_to_outcome(
         if stream in done:
             exc = stream.exception()
             if exc is None:
-                if pending := stream.result():
-                    return Outcome("awaiting_approval", approvals=pending)
+                if paused := stream.result():
+                    return Outcome(
+                        "awaiting_approval",
+                        approvals=pending_approvals(paused),
+                        interrupt_ids=[i.id for i in paused.interrupts],
+                    )
                 return Outcome("succeeded")
             return _failure(run.id, exc)
         stream.cancel()
@@ -421,7 +435,9 @@ async def _execute(deps: RunDeps, run_id: uuid.UUID, decision: dict | None = Non
     outcome: Outcome | None = None
     try:
         if await deps.events_client.exists(cancel_key(run_id)):
-            outcome = Outcome("cancelled")  # cancelled while queued
+            outcome = Outcome("cancelled")  # cancelled while queued (or while paused: it still has its earlier turn)
+            with suppress(Exception):
+                await _seed_recorder(deps, run, recorder)
         else:
             outcome = await _run_to_outcome(deps, run, model_id, text, recorder, decision)
     finally:
@@ -437,14 +453,27 @@ async def _execute(deps: RunDeps, run_id: uuid.UUID, decision: dict | None = Non
 async def _pause_run(deps: RunDeps, run: Run, outcome: Outcome) -> None:
     """The run waits for the user's decision on its code: no worker, no concurrency slot, stream kept open.
     `POST /runs/{id}/approve` (or the expiry task) resumes the same run."""
-    for request in outcome.approvals or []:
-        await events.publish(deps.events_client, run.id, "approval_required", request)
+    # The database first: a client that sees `approval_required` and answers at once must find the run paused.
     paused = await asyncio.to_thread(_mark_awaiting_approval, deps, run.id)
     try:
         if paused:
-            await asyncio.to_thread(approvals.register_pending, deps.guard_client, run.id)
+            await asyncio.to_thread(approvals.register_pending, deps.guard_client, run.id, outcome.interrupt_ids)
+            for request in outcome.approvals or []:
+                await _publish_with_retry(deps, run.id, "approval_required", request)
     finally:
         await asyncio.to_thread(run_guard.release, deps.guard_client, run.user_id, run.conversation_id, run.id)
+
+
+async def _publish_with_retry(deps: RunDeps, run_id: uuid.UUID, event_type: str, data: dict) -> None:
+    for attempt in range(PUBLISH_ATTEMPTS):
+        try:
+            await events.publish(deps.events_client, run_id, event_type, data)
+            return
+        except Exception as exc:
+            logger.warning("Publishing %s for run id=%s failed: %s", event_type, run_id, type(exc).__name__)
+            if attempt == PUBLISH_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(0.2 * 2**attempt)
 
 
 def _mark_awaiting_approval(deps: RunDeps, run_id: uuid.UUID) -> bool:

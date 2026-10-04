@@ -62,8 +62,10 @@ async def answer(db, fake_redis, deps, run, enqueued, decision):
     outcome = approvals.resume_run(db, fake_redis, reload(db, run), decision)
     assert outcome is approvals.Resume.RESUMED
     kwargs = enqueued[-1]
-    assert kwargs["args"] == [str(run.id), decision] and kwargs["task_id"] == str(run.id)
-    await execute_run(deps, run.id, decision)
+    sent = kwargs["args"][1]
+    assert kwargs["args"][0] == str(run.id) and kwargs["task_id"] == str(run.id)
+    assert {k: v for k, v in sent.items() if k != "interrupt_ids"} == decision and sent["interrupt_ids"]
+    await execute_run(deps, run.id, sent)
 
 
 async def test_run_pauses_for_approval_and_releases_its_slots(db, user, approvals_on, make_deps, new_run, fake_redis, fake_async_redis):
@@ -213,7 +215,8 @@ async def test_approve_endpoint(authed_client, db, approvals_on, make_deps, new_
     assert (await authed_client.post(url, json={"decision": "maybe"}, headers=CSRF)).status_code == 422
     ok = await authed_client.post(url, json={"decision": "edit", "edited_code": "print(2)"}, headers=CSRF)
     assert ok.status_code == 202 and ok.json()["status"] == "queued"
-    assert enqueued[-1]["args"][1] == {"type": "edit", "code": "print(2)", "message": None}
+    sent = enqueued[-1]["args"][1]
+    assert {k: v for k, v in sent.items() if k != "interrupt_ids"} == {"type": "edit", "code": "print(2)", "message": None}
     assert (await authed_client.post(url, json={"decision": "approve"}, headers=CSRF)).status_code == 409  # already answered
 
 
@@ -240,3 +243,68 @@ async def test_settings_roundtrip(authed_client, user):
     assert (await authed_client.get("/api/v1/settings")).json() == body
     bad = {"require_code_approval": True, "default_model": "openai:not-allowed"}
     assert (await authed_client.put("/api/v1/settings", json=bad, headers=CSRF)).status_code == 422
+
+
+# --- review fixes -------------------------------------------------------------------------------------------
+
+
+async def test_a_stale_decision_does_not_answer_a_later_pause(db, approvals_on, make_deps, new_run, fake_async_redis):
+    run = new_run()
+    deps = make_deps(adapting)
+    await pause(deps, run)
+    # A redelivered task still carries a decision for an earlier pause (other interrupt ids).
+    db.execute(Run.__table__.update().where(Run.id == run.id).values(status="queued"))
+    db.commit()
+    await execute_run(deps, run.id, {"type": "approve", "interrupt_ids": ["some-earlier-pause"]})
+
+    assert reload(db, run).status == "awaiting_approval"  # paused again, nothing was approved on the user's behalf
+    evts = await stream_events(fake_async_redis, run.id)
+    assert "tool_result" not in types(evts)
+    assert types(evts).count("approval_required") == 2
+    assert [d["reason"] for t, d in evts if t == "run_resumed"] == ["redelivery"]
+
+
+async def test_the_run_is_marked_paused_before_the_approval_event_is_published(db, approvals_on, make_deps, new_run, monkeypatch):
+    seen = []
+    real = events.publish
+
+    async def spy(client, run_id, event_type, data):
+        if event_type == "approval_required":
+            db.expire_all()
+            seen.append(db.get(Run, run_id).status)
+        return await real(client, run_id, event_type, data)
+
+    monkeypatch.setattr(events, "publish", spy)
+    run = new_run()
+    await pause(make_deps(adapting), run)
+    assert seen == ["awaiting_approval"]
+
+
+async def test_cancelling_a_paused_run_keeps_what_it_did_before_the_pause(db, approvals_on, make_deps, new_run, enqueued, authed_client):
+    def responder(messages):
+        if isinstance(messages[-1], HumanMessage):
+            return AIMessage("Let me check the data.", tool_calls=[{"name": "run_python", "args": {"code": "1"}, "id": "c1", "type": "tool_call"}])
+        return AIMessage("?")
+
+    run = new_run()
+    deps = make_deps(responder)
+    await pause(deps, run)
+    await authed_client.post(f"/api/v1/runs/{run.id}/cancel", headers=CSRF)
+    await execute_run(deps, run.id, None)
+    assert reload(db, run).status == "cancelled"
+    message = db.scalars(select(Message).where(Message.conversation_id == run.conversation_id, Message.role == "assistant")).one()
+    assert message.content["text"] == "Let me check the data."
+
+
+async def test_a_failed_cancel_hand_off_leaves_no_cancel_flag(db, approvals_on, make_deps, new_run, fake_async_redis, authed_client, monkeypatch):
+    run = new_run()
+    await pause(make_deps(adapting), run)
+
+    def broken(**kwargs):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(run_agent, "apply_async", broken)
+    with pytest.raises(RuntimeError):
+        await authed_client.post(f"/api/v1/runs/{run.id}/cancel", headers=CSRF)
+    assert reload(db, run).status == "awaiting_approval"
+    assert not await fake_async_redis.exists(cancel_key(run.id))

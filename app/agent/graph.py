@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent.context import AgentContext, emit
+from app.agent.mcp import McpToolErrors
 from app.agent.memory import MEMORY_TOOLS, MemoryMiddleware
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOLS
@@ -90,6 +91,8 @@ def build_agent(
             keep_messages=SUMMARIZE_KEEP_MESSAGES,
         ),
     ]
+    if extra_tools:
+        middleware.append(McpToolErrors(list(extra_tools)))
     if require_approval:
         middleware.append(
             HumanInTheLoopMiddleware(

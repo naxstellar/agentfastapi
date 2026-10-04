@@ -8,8 +8,13 @@ error tool result (the agent's ToolNode converts exceptions), not as a crashed r
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.types import Command
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from app.config import MCP_SERVERS
@@ -50,6 +55,31 @@ async def load_mcp_tools(servers: dict | None = None, *, reserved: frozenset[str
             taken.add(tool.name)
             tools.append(tool)
     return tools
+
+
+class McpToolErrors(AgentMiddleware):
+    """Turns any failure of an MCP tool call into an error tool result. The adapter only converts errors the server
+    reports; a dropped connection or a timeout would otherwise raise out of the tool node and fail the run."""
+
+    def __init__(self, tools: list[BaseTool]):
+        self._names = {t.name for t in tools}
+
+    async def awrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
+    ) -> ToolMessage | Command:
+        call = request.tool_call
+        if call["name"] not in self._names:
+            return await handler(request)
+        try:
+            return await handler(request)
+        except Exception as exc:  # CancelledError is a BaseException and passes through
+            logger.warning("MCP tool %r failed: %s", call["name"], type(exc).__name__)
+            return ToolMessage(
+                f"Error: the tool {call['name']!r} failed ({type(exc).__name__}). Try again or use another approach.",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
 
 
 def clear_cache() -> None:

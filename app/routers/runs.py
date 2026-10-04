@@ -127,7 +127,12 @@ async def cancel_run(run_id: uuid.UUID, db: DbSessionDep, user: DbUserDep) -> Ru
     if run.status == "awaiting_approval":
         # No worker holds a paused run: hand it to one, which sees the flag and finishes it as cancelled.
         await events.api_events_client().set(cancel_key(run_id), "1", ex=CANCEL_FLAG_TTL_S)
-        await anyio.to_thread.run_sync(lambda: approvals.resume_run(db, redis_client, run, None, take_guards=False))
+        try:
+            await anyio.to_thread.run_sync(lambda: approvals.resume_run(db, redis_client, run, None, take_guards=False))
+        except BaseException:
+            # The run went back to waiting; a flag left behind would cancel it when it is next answered.
+            await events.api_events_client().delete(cancel_key(run_id))
+            raise
         await anyio.to_thread.run_sync(db.refresh, run)
     elif run.status in ACTIVE_STATUSES:
         # The worker's watcher (or its start-up check, for a queued run) acts on this flag.

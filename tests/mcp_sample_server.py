@@ -17,5 +17,13 @@ def explode() -> str:
     raise ValueError("kaboom")
 
 
+@server.tool()
+def die() -> str:
+    """Kills the server process mid-call."""
+    import os
+
+    os._exit(1)
+
+
 if __name__ == "__main__":
     server.run("stdio")

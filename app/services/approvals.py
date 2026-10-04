@@ -6,6 +6,7 @@ deadline of each pause lives in a Redis sorted set that the periodic `agent.expi
 flush loses deadlines, and the task re-registers every paused run it doesn't find there.
 """
 
+import json
 import logging
 import time
 import uuid
@@ -17,7 +18,7 @@ import redis
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.config import APPROVAL_TIMEOUT_S
+from app.config import APPROVAL_TIMEOUT_S, RUN_TIME_LIMIT_S
 from app.models_agent import Run
 from app.services import run_guard
 
@@ -34,8 +35,15 @@ class Resume(Enum):
     USER_AT_LIMIT = "user_at_limit"
 
 
-def register_pending(client: redis.Redis, run_id: uuid.UUID) -> None:
+def _ids_key(run_id: uuid.UUID) -> str:
+    return f"run:{run_id}:pause_ids"
+
+
+def register_pending(client: redis.Redis, run_id: uuid.UUID, interrupt_ids: list[str] | None = None) -> None:
+    """Records a pause: its deadline and the ids of what it waits on (a decision is bound to them)."""
     client.zadd(PENDING_KEY, {str(run_id): time.time() + APPROVAL_TIMEOUT_S}, nx=True)
+    if interrupt_ids:
+        client.set(_ids_key(run_id), json.dumps(interrupt_ids), ex=APPROVAL_TIMEOUT_S + RUN_TIME_LIMIT_S + 3600)
 
 
 def resume_run(
@@ -73,6 +81,8 @@ def resume_run(
         release()
         return Resume.NOT_WAITING
     client.zrem(PENDING_KEY, str(run.id))
+    if decision is not None and (raw_ids := client.get(_ids_key(run.id))):
+        decision = {**decision, "interrupt_ids": json.loads(raw_ids)}  # answers this pause, not a later one
     try:
         run_agent.apply_async(args=[str(run.id), decision], task_id=str(run.id))
     except Exception:
