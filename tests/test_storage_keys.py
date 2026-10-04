@@ -30,4 +30,4 @@ def test_safe_filename(raw, expected):
 def test_key_builders_never_use_raw_filenames():
     assert dataset_key(USER, OBJ, "../a b.csv") == f"users/{USER}/datasets/{OBJ}/a_b.csv"
     assert pending_dataset_key(USER, OBJ, "a.csv") == f"pending/users/{USER}/datasets/{OBJ}/a.csv"
-    assert artifact_key(USER, OBJ, "chart 1.png") == f"users/{USER}/artifacts/{OBJ}/chart_1.png"
+    assert artifact_key(USER, OBJ, OBJ, "chart 1.png") == f"users/{USER}/artifacts/{OBJ}/{OBJ}/chart_1.png"

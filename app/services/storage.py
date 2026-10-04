@@ -43,6 +43,7 @@ class Storage(Protocol):
     def move(self, src_key: str, dst_key: str) -> None: ...
     def delete(self, key: str) -> None: ...
     def open_read(self, key: str) -> BinaryIO: ...
+    def upload(self, key: str, data: bytes, content_type: str) -> None: ...
 
 
 def _ascii_slug(text: str, allowed: str) -> str:
@@ -70,8 +71,9 @@ def pending_dataset_key(user_id: uuid.UUID, dataset_id: uuid.UUID, filename: str
     return PENDING_PREFIX + dataset_key(user_id, dataset_id, filename)
 
 
-def artifact_key(user_id: uuid.UUID, run_id: uuid.UUID, filename: str) -> str:
-    return f"users/{user_id}/artifacts/{run_id}/{safe_filename(filename)}"
+def artifact_key(user_id: uuid.UUID, run_id: uuid.UUID, artifact_id: uuid.UUID, filename: str) -> str:
+    # artifact_id keeps keys unique when one run produces the same filename twice.
+    return f"users/{user_id}/artifacts/{run_id}/{artifact_id}/{safe_filename(filename)}"
 
 
 def _expiry(ttl: timedelta) -> datetime:
@@ -134,6 +136,9 @@ class GcsStorage:
 
     def open_read(self, key: str) -> BinaryIO:
         return self._bucket.blob(key).open("rb")
+
+    def upload(self, key: str, data: bytes, content_type: str) -> None:
+        self._bucket.blob(key).upload_from_string(data, content_type=content_type)
 
 
 class StorageNotConfiguredError(RuntimeError):

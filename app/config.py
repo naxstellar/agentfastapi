@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -37,7 +38,6 @@ APP_VERSION = os.environ.get("APP_VERSION") or "dev"
 # Agent-service secrets are optional at boot so the auth-only app keeps running without them.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or None
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or None
-E2B_API_KEY = os.environ.get("E2B_API_KEY") or None
 
 GCS_BUCKET = os.environ.get("GCS_BUCKET") or None
 GCS_SIGNER_SERVICE_ACCOUNT = os.environ.get("GCS_SIGNER_SERVICE_ACCOUNT") or None
@@ -68,15 +68,36 @@ if not isinstance(MCP_SERVERS, dict):
     raise RuntimeError("MCP_SERVERS must be a JSON object")
 
 MAX_UPLOAD_BYTES = _int("MAX_UPLOAD_BYTES", 50 * 1024 * 1024)
+# Datasets travel base64-encoded inside one sandbox execute request, capped at 100 MB by the service.
+if MAX_UPLOAD_BYTES > 70 * 1024 * 1024:
+    raise RuntimeError("MAX_UPLOAD_BYTES must be at most 70 MiB (the sandbox request cap)")
 MAX_USER_STORAGE_BYTES = _int("MAX_USER_STORAGE_BYTES", 1024 * 1024 * 1024)
 
 AGENT_RECURSION_LIMIT = _int("AGENT_RECURSION_LIMIT", 50)
 RUN_TIME_LIMIT_S = _int("RUN_TIME_LIMIT_S", 3600)
 APPROVAL_TIMEOUT_S = _int("APPROVAL_TIMEOUT_S", 3600)
 
+# Code execution: Vertex AI Agent Engine. Sandboxes live under this instance, and the API location
+# is taken from its name. Optional at boot; without it make_sandbox_manager() raises SandboxNotConfiguredError.
+AGENT_ENGINE_NAME = os.environ.get("AGENT_ENGINE_NAME") or None
+if AGENT_ENGINE_NAME and not re.fullmatch(r"projects/[^/]+/locations/[^/]+/reasoningEngines/[^/]+", AGENT_ENGINE_NAME):
+    raise RuntimeError("AGENT_ENGINE_NAME must look like projects/<p>/locations/<l>/reasoningEngines/<id>")
+SANDBOX_MACHINE_CONFIG = os.environ.get("SANDBOX_MACHINE_CONFIG") or None
+if SANDBOX_MACHINE_CONFIG not in (None, "MACHINE_CONFIG_UNSPECIFIED", "MACHINE_CONFIG_VCPU4_RAM4GIB"):
+    raise RuntimeError("SANDBOX_MACHINE_CONFIG must be MACHINE_CONFIG_UNSPECIFIED or MACHINE_CONFIG_VCPU4_RAM4GIB")
+# A sandbox's TTL is fixed at creation (executions don't extend it), so this is its maximum lifetime.
+SANDBOX_TTL_S = _int("SANDBOX_TTL_S", 3600)
+# Sandboxes unused this long may be deleted early to free capacity.
 SANDBOX_IDLE_TIMEOUT_S = _int("SANDBOX_IDLE_TIMEOUT_S", 300)
 SANDBOX_EXEC_TIMEOUT_S = _int("SANDBOX_EXEC_TIMEOUT_S", 120)
-MAX_CONCURRENT_SANDBOXES = _int("MAX_CONCURRENT_SANDBOXES", 20)
+# The service ends an execution after ~300 s with a 503; our own deadline must always fire first.
+if not 0 < SANDBOX_EXEC_TIMEOUT_S < 290:
+    raise RuntimeError("SANDBOX_EXEC_TIMEOUT_S must be between 1 and 289")
+if SANDBOX_TTL_S < 2 * SANDBOX_EXEC_TIMEOUT_S + 600:
+    raise RuntimeError("SANDBOX_TTL_S must be at least 2 * SANDBOX_EXEC_TIMEOUT_S + 600")
+# Below the Agent Engine quota of 500 sandboxes per project and region.
+MAX_CONCURRENT_SANDBOXES = _int("MAX_CONCURRENT_SANDBOXES", 450)
+MAX_ARTIFACT_BYTES = _int("MAX_ARTIFACT_BYTES", 25 * 1024 * 1024)
 
 SUMMARIZE_TRIGGER_TOKENS = _int("SUMMARIZE_TRIGGER_TOKENS", 100_000)
 SUMMARIZE_KEEP_MESSAGES = _int("SUMMARIZE_KEEP_MESSAGES", 20)

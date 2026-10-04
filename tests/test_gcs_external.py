@@ -8,7 +8,7 @@ import pytest
 
 from app.main import app as fastapi_app
 from app.routers import datasets as datasets_router
-from app.services.storage import get_storage
+from app.services.storage import artifact_key, get_storage
 from app.workers.datasets import run_process_dataset
 from tests.test_datasets_api import SALES_XLSX
 
@@ -74,3 +74,18 @@ async def test_signed_url_upload_process_download_delete(api, real_storage):
     finally:
         real_storage.delete(pending_key)
         real_storage.delete(pending_key.removeprefix("pending/"))
+
+
+async def test_artifact_upload_is_served_as_an_attachment(real_storage):
+    # SVG can carry script, so artifacts are only ever downloaded, never rendered inline.
+    key = artifact_key(uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), "chart.svg")
+    data = b"<svg xmlns='http://www.w3.org/2000/svg'/>"
+    try:
+        real_storage.upload(key, data, "image/svg+xml")
+        assert real_storage.object_size(key) == len(data)
+        async with httpx.AsyncClient() as gcs:
+            fetched = await gcs.get(real_storage.download_url(key, "chart.svg").url)
+        assert fetched.status_code == 200 and fetched.content == data
+        assert fetched.headers["content-disposition"].startswith("attachment")
+    finally:
+        real_storage.delete(key)
