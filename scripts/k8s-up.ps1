@@ -81,6 +81,20 @@ if (-not $?) {
     Write-Host "Secret 'agentfastapi-tls' already exists -- leaving it as-is."
 }
 
+# Google ADC for the api (signed URLs) and worker (GCS, sandboxes): the laptop's file, copied into a secret that
+# lives only in this cluster. It holds your refresh token, so it is created here and never committed. Optional.
+$adc = Join-Path $env:APPDATA 'gcloud\application_default_credentials.json'
+kubectl get secret agentfastapi-gcp-adc -n agentfastapi *> $null
+if (-not $?) {
+    if (Test-Path $adc) {
+        kubectl create secret generic agentfastapi-gcp-adc -n agentfastapi --from-file=adc.json=$adc
+    } else {
+        Write-Warning "No ADC file at ${adc}: dataset processing and run_python won't work in the cluster (see CLAUDE.md 'GCS setup')."
+    }
+} else {
+    Write-Host "Secret 'agentfastapi-gcp-adc' already exists -- leaving it as-is. Delete it manually first if your ADC changed."
+}
+
 Write-Host "Applying manifests..."
 kubectl apply -f k8s/postgres.yaml
 kubectl apply -f k8s/redis.yaml

@@ -1,6 +1,5 @@
 # Celery worker and beat: the same image as the api (one image, different command).
-# No GCS / Agent Engine credentials exist in this cluster (ADC lives on the laptop), so dataset processing and
-# run_python fail here; runs that need neither (plain chat) work.
+# Google ADC comes from the agentfastapi-gcp-adc secret (created by k8s-up.ps1 from the laptop's ADC file; optional).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,12 +31,23 @@ spec:
                   key: DATABASE_URL
             - name: REDIS_URL
               value: redis://redis:6379/0
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/gcp/adc.json
+          volumeMounts:
+            - name: gcp-adc
+              mountPath: /var/run/gcp
+              readOnly: true
           livenessProbe:
             exec:
               command: [sh, -c, "celery -A app.workers.celery_app inspect ping -d celery@$HOSTNAME"]
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 15
+      volumes:
+        - name: gcp-adc
+          secret:
+            secretName: agentfastapi-gcp-adc
+            optional: true
 ---
 # Exactly one beat: it schedules agent.expire_approvals. Recreate, so a rollout never runs two at once.
 apiVersion: apps/v1

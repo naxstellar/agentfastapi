@@ -265,3 +265,4 @@ async def test_static_modules_are_served_as_javascript(api):
     for path in ("/static/js/app.js", "/static/vendor/marked.min.js"):
         response = await api.get(path)
         assert response.status_code == 200 and "javascript" in response.headers["content-type"]
+        assert response.headers["cache-control"] == "no-cache"

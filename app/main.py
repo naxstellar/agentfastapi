@@ -47,7 +47,19 @@ app.add_middleware(
 mimetypes.add_type("text/javascript", ".js")
 
 STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    """`no-cache` = revalidate with the ETag on every load (a 304 when unchanged). With only Last-Modified, browsers
+    cache heuristically and keep running an old UI script after a deploy."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", RevalidatingStaticFiles(directory=STATIC_DIR), name="static")
 
 
 

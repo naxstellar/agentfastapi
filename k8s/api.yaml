@@ -41,7 +41,12 @@ spec:
                   key: DATABASE_URL
             - name: REDIS_URL
               value: redis://redis:6379/0
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/gcp/adc.json
           volumeMounts:
+            - name: gcp-adc
+              mountPath: /var/run/gcp
+              readOnly: true
             - name: tls
               mountPath: /app/certs-tls
               readOnly: true
@@ -60,6 +65,10 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
       volumes:
+        - name: gcp-adc
+          secret:
+            secretName: agentfastapi-gcp-adc
+            optional: true
         - name: tls
           secret:
             secretName: agentfastapi-tls

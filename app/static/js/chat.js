@@ -286,7 +286,7 @@ export class Chat {
         this.addToolResult(data);
         break;
       case "artifact":
-        live.root.append(this.artifactEl(data));
+        live.root.append(this.artifactEl({ ...data, id: data.artifact_id }));
         break;
       case "approval_required":
         this.showApproval(data);
