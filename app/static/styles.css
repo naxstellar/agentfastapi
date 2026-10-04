@@ -64,6 +64,8 @@ button.linkish { background: none; border: none; color: #93c5fd; padding: 0; tex
 .chip.bad { color: #fca5a5; border-color: #7f1d1d; }
 .artifact { display: flex; flex-direction: column; gap: 0.3rem; align-items: flex-start; }
 .artifact img { max-width: 100%; max-height: 480px; background: white; border-radius: 6px; }
+.artifact video { max-width: 100%; max-height: 480px; border-radius: 6px; }
+.artifact audio { width: 100%; }
 details.tool { border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.7rem; background: #0b1220; }
 details.tool.bad { border-color: #7f1d1d; }
 details.tool summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }

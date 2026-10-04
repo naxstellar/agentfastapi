@@ -92,7 +92,7 @@ class SandboxDataset:
 @dataclass(frozen=True)
 class ArtifactInfo:
     id: uuid.UUID
-    kind: str  # "image" | "file"
+    kind: str  # "image" | "audio" | "video" | "file"
     filename: str
 
 
@@ -418,26 +418,46 @@ class ConversationWorkspace:
                 notes.append(f"{file.name} could not be saved for the user (storage error); try saving it again.")
         return artifacts, notes
 
-    async def _save_artifact(self, filename: str, data: bytes) -> ArtifactInfo:
-        artifact_id = uuid.uuid4()
+    async def _save_artifact(
+        self, filename: str, data: bytes, *, artifact_id: uuid.UUID | None = None,
+        content_type: str | None = None, announce: bool = True,
+    ) -> ArtifactInfo:
+        artifact_id = artifact_id or uuid.uuid4()
         filename = safe_filename(filename)
-        content_type = _MIME_TYPES.guess_type(filename)[0] or "application/octet-stream"
-        kind = "image" if content_type.startswith("image/") else "file"
+        content_type = content_type or _MIME_TYPES.guess_type(filename)[0] or "application/octet-stream"
+        major = content_type.split("/", 1)[0]
+        kind = major if major in ("image", "audio", "video") else "file"
         key = artifact_key(self.user_id, self.run_id, artifact_id, filename)
         # Object first: an orphaned object is harmless, a row pointing at nothing is not.
         await asyncio.to_thread(self._storage.upload, key, data, content_type)
-        await asyncio.to_thread(self._insert_artifact, artifact_id, kind, key, filename)
-        await self._emit("artifact", {"artifact_id": str(artifact_id), "kind": kind, "filename": filename})
+        inserted = await asyncio.to_thread(self._insert_artifact, artifact_id, kind, key, filename)
+        if inserted and announce:
+            await self._emit("artifact", {"artifact_id": str(artifact_id), "kind": kind, "filename": filename})
         return ArtifactInfo(artifact_id, kind, filename)
 
-    def _insert_artifact(self, artifact_id: uuid.UUID, kind: str, key: str, filename: str) -> None:
+    def _insert_artifact(self, artifact_id: uuid.UUID, kind: str, key: str, filename: str) -> bool:
+        """False if the row already exists (the same media saved twice by a redelivered run)."""
         with self._session_factory() as db:
+            if db.get(Artifact, artifact_id) is not None:
+                return False
             db.add(
                 Artifact(
                     id=artifact_id, run_id=self.run_id, user_id=self.user_id, kind=kind, gcs_key=key, filename=filename
                 )
             )
             db.commit()
+            return True
+
+    async def save_media(self, media) -> ArtifactInfo | None:
+        """Saves a block the model returned (app.agent.media.MediaBlock). None if storage failed. No event."""
+        try:
+            return await self._save_artifact(
+                media.filename, media.data, artifact_id=media.artifact_id, content_type=media.content_type,
+                announce=False,  # called from the runner, outside the graph: it publishes the event itself
+            )
+        except STORAGE_ERRORS as exc:
+            logger.warning("Could not save media of run %s: %s", self.run_id, type(exc).__name__)
+            return None
 
     # --- LLM-facing output ----------------------------------------------------------------------------
 

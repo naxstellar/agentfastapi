@@ -226,6 +226,21 @@ async def test_artifact_download_url_is_owner_only(api, alice, db, storage, make
     assert (await api.get(f"{API}/artifacts/{artifact.id}")).status_code == 404
 
 
+async def test_conversation_artifacts_listing_is_owner_only(api, alice, db, make_user, login_as):
+    conv, other = await create(api), await create(api)
+    for conversation, name in ((conv, "a.png"), (other, "b.png")):
+        run = Run(conversation_id=uuid.UUID(conversation["id"]), user_id=alice.id, status="succeeded")
+        db.add(run)
+        db.flush()
+        db.add(Artifact(run_id=run.id, user_id=alice.id, kind="image", gcs_key=f"users/x/{name}", filename=name))
+    db.flush()
+
+    listed = await api.get(f"{API}/conversations/{conv['id']}/artifacts")
+    assert [a["filename"] for a in listed.json()] == ["a.png"]
+    login_as(make_user("auth0|bob-list"))
+    assert (await api.get(f"{API}/conversations/{conv['id']}/artifacts")).status_code == 404
+
+
 async def test_attached_datasets_listing_is_per_conversation_and_owner_only(api, alice, db, make_user, login_as):
     conv, other = await create(api), await create(api)
     dataset = Dataset(user_id=alice.id, filename="a.csv", gcs_key="users/x/a.csv", size_bytes=1, content_type="text/csv", status="ready")

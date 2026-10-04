@@ -26,12 +26,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.agent.context import make_context
 from app.agent.graph import RESERVED_TOOL_NAMES, Persistence, build_agent, run_config
 from app.agent.mcp import load_mcp_tools
+from app.agent.media import MAX_MEDIA_PER_RUN, extract_media
 from app.agent.history import TurnRecorder, save_assistant_message
 from app.agent.models import ModelNotConfiguredError, UnknownModelError, make_chat_model
 from app.agent.sandbox import SandboxManager
 from app.agent.usage import UsageCallback
-from app.config import RUN_TIME_LIMIT_S
-from app.models_agent import Conversation, Message, Run, UserSettings
+from app.config import MAX_ARTIFACT_BYTES, RUN_TIME_LIMIT_S
+from app.models_agent import Artifact, Conversation, Message, Run, UserSettings
 from app.observability import bind_run
 from app.services import approvals, events, quota, run_guard
 from app.services.quota import Quota
@@ -123,6 +124,18 @@ def _mark_running(deps: RunDeps, run_id: uuid.UUID) -> bool:
         return result.rowcount == 1
 
 
+def _with_saved_artifacts(db, run_id: uuid.UUID, content: dict | None) -> dict | None:
+    """Adds the run's saved artifacts the recorder doesn't hold (media the model returned, or files saved before
+    a redelivery), so the display message always lists everything the run produced."""
+    rows = db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.created_at)).all()
+    content = dict(content or {})
+    have = {a["id"] for a in content.get("artifacts", [])}
+    extra = [{"id": str(r.id), "kind": r.kind, "filename": r.filename} for r in rows if str(r.id) not in have]
+    if extra:
+        content["artifacts"] = [*content.get("artifacts", []), *extra]
+    return content or None
+
+
 def _finalize_db(
     deps: RunDeps, run: Run, outcome: Outcome, content: dict | None, usage: tuple[int, int] = (0, 0)
 ) -> bool:
@@ -138,7 +151,8 @@ def _finalize_db(
         if result.rowcount != 1:
             db.rollback()
             return False
-        if content and (content.get("text") or content.get("tools")):
+        content = _with_saved_artifacts(db, run.id, content)
+        if content and (content.get("text") or content.get("tools") or content.get("artifacts")):
             save_assistant_message(db, run.conversation_id, run.id, content)
         quota.rollup_run(db, run.id, run.user_id, *usage)
         db.commit()
@@ -213,6 +227,7 @@ async def _stream(
 
     tokens = _TokenBuffer(deps, run.id)
     interrupted = False
+    media_saved = 0
     try:
         async for mode, chunk in agent.astream(
             graph_input, config=config, context=context, stream_mode=["messages", "updates", "custom"]
@@ -236,6 +251,10 @@ async def _stream(
                 for node, values in chunk.items():
                     if isinstance(values, dict):
                         await _publish_update(deps, run.id, node, values.get("messages", []))
+                        if node in ("model", "tools") or node.endswith(".after_model"):
+                            media_saved = await _save_media(
+                                deps, run.id, context.workspace, values.get("messages", []), media_saved
+                            )
             elif mode == "custom" and isinstance(chunk, dict) and chunk.get("type") in CUSTOM_EVENT_TYPES:
                 await events.publish(deps.events_client, run.id, chunk["type"], chunk.get("data") or {})
     finally:
@@ -333,6 +352,28 @@ def _seed_from_checkpoint(recorder: TurnRecorder, messages: list, run_id: uuid.U
     if start is None:
         return
     recorder.messages.extend(m for m in messages[start + 1 :] if isinstance(m, (AIMessage, ToolMessage)))
+
+
+async def _save_media(deps: RunDeps, run_id: uuid.UUID, workspace, messages: list, saved: int) -> int:
+    """Saves images/audio/video/files the model returned as artifacts (plan WP8A). Returns the new running count."""
+    for message in messages:
+        blocks, notes = extract_media(run_id, message, MAX_ARTIFACT_BYTES)
+        for block in blocks:
+            if saved >= MAX_MEDIA_PER_RUN:
+                notes.append(f"Media over the limit of {MAX_MEDIA_PER_RUN} per run was not saved.")
+                break
+            info = await workspace.save_media(block)
+            if info is None:
+                notes.append("A media file could not be saved (storage error).")
+                continue
+            saved += 1
+            await events.publish(
+                deps.events_client, run_id, "artifact",
+                {"artifact_id": str(info.id), "kind": info.kind, "filename": info.filename},
+            )
+        for note in dict.fromkeys(notes):
+            await events.publish(deps.events_client, run_id, "status", {"message": note})
+    return saved
 
 
 async def _publish_update(deps: RunDeps, run_id: uuid.UUID, node: str, messages: list) -> None:

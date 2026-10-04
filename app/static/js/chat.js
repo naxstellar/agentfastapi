@@ -39,6 +39,8 @@ export class Chat {
       }
     });
     this.el.input.addEventListener("input", () => this.autosize());
+    document.getElementById("files-open").addEventListener("click", () => this.showFiles());
+    document.getElementById("files-close").addEventListener("click", () => document.getElementById("files-dialog").close());
   }
 
   get busy() {
@@ -143,30 +145,53 @@ export class Chat {
 
   // ---- artifacts -------------------------------------------------------------------------
 
+  async download(artifact) {
+    try {
+      const signed = await api(`/artifacts/${artifact.id}`);
+      window.location.assign(signed.url); // served as an attachment: downloads, doesn't navigate
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+
   artifactEl(artifact) {
     const wrap = h("div", { class: "artifact" });
-    const link = h("button", { class: "linkish", type: "button" }, `⬇ ${artifact.filename}`);
-    link.addEventListener("click", async () => {
-      try {
-        const signed = await api(`/artifacts/${artifact.id}`);
-        window.location.assign(signed.url); // served as an attachment: downloads, doesn't navigate
-      } catch (error) {
-        toast(error.message);
-      }
-    });
-    if (artifact.kind === "image") {
-      const img = h("img", { alt: artifact.filename, loading: "lazy" });
-      img.hidden = true;
+    const link = h("button", { class: "linkish", type: "button" }, `⬇ Download ${artifact.filename}`);
+    link.addEventListener("click", () => this.download(artifact));
+    const players = { image: "img", audio: "audio", video: "video" };
+    const tag = players[artifact.kind];
+    if (tag) {
+      const media = h(tag, tag === "img" ? { alt: artifact.filename, loading: "lazy" } : { controls: "", preload: "none" });
+      media.hidden = true;
       api(`/artifacts/${artifact.id}`)
         .then((signed) => {
-          img.src = signed.url;
-          img.hidden = false;
+          media.src = signed.url;
+          media.hidden = false;
         })
         .catch(() => {});
-      wrap.append(img);
+      wrap.append(media);
     }
     wrap.append(link);
     return wrap;
+  }
+
+  async showFiles() {
+    const list = document.getElementById("files-list");
+    clear(list);
+    const dialog = document.getElementById("files-dialog");
+    if (!this.conv) return toast("Open a conversation first.");
+    try {
+      const files = await api(`/conversations/${this.conv.id}/artifacts`);
+      if (!files.length) list.append(h("li", { class: "muted" }, "Nothing yet."));
+      files.forEach((file) => {
+        const button = h("button", { class: "linkish", type: "button" }, `⬇ ${file.filename}`);
+        button.addEventListener("click", () => this.download(file));
+        list.append(h("li", {}, button, h("span", { class: "muted" }, ` ${file.kind} · ${new Date(file.created_at).toLocaleString()}`)));
+      });
+      dialog.showModal();
+    } catch (error) {
+      toast(error.message);
+    }
   }
 
   // ---- sending ---------------------------------------------------------------------------
