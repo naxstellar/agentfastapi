@@ -19,6 +19,7 @@ from app.agent.sandbox import make_sandbox_manager
 from app.config import REDIS_URL
 from app.db import SessionLocal
 from app.redis_client import redis_client
+from app.services import approvals
 from app.services.events import make_events_client
 from app.services.storage import get_storage
 from app.workers.celery_app import celery_app
@@ -64,9 +65,9 @@ class WorkerRuntime:
         except BaseException as exc:
             self._ready.set_exception(exc)
 
-    def run(self, run_id: uuid.UUID) -> None:
+    def run(self, run_id: uuid.UUID, decision: dict | None = None) -> None:
         assert self._deps is not None
-        asyncio.run_coroutine_threadsafe(execute_run(self._deps, run_id), self._loop).result()
+        asyncio.run_coroutine_threadsafe(execute_run(self._deps, run_id, decision), self._loop).result()
 
 
 _runtime: WorkerRuntime | None = None
@@ -82,5 +83,12 @@ def get_runtime() -> WorkerRuntime:
 
 
 @celery_app.task(name="agent.run")
-def run_agent(run_id: str) -> None:
-    get_runtime().run(uuid.UUID(run_id))
+def run_agent(run_id: str, decision: dict | None = None) -> None:
+    """`decision` is the user's answer when this resumes a run paused for code approval (WP6C)."""
+    get_runtime().run(uuid.UUID(run_id), decision)
+
+
+@celery_app.task(name="agent.expire_approvals")
+def expire_approvals_task() -> int:
+    """Periodic (celery beat): rejects paused runs nobody answered within APPROVAL_TIMEOUT_S."""
+    return approvals.expire_approvals(SessionLocal, redis_client)

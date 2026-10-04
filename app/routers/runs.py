@@ -5,13 +5,13 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
 import anyio.to_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.agent.history import add_user_message
@@ -19,7 +19,7 @@ from app.auth.security import DbUserDep
 from app.db import DbSessionDep
 from app.models_agent import Conversation, Run
 from app.redis_client import redis_client
-from app.services import events, run_guard
+from app.services import approvals, events, run_guard
 from app.services.quota import Quota
 from app.workers.runner import ACTIVE_STATUSES, CANCEL_FLAG_TTL_S, TERMINAL_STATUSES, cancel_key
 from app.workers.tasks import run_agent
@@ -87,7 +87,11 @@ def create_run(conversation_id: uuid.UUID, body: RunCreate, db: DbSessionDep, us
         stale_before = datetime.now(timezone.utc) - timedelta(seconds=run_guard.GUARD_TTL_S)
         if db.scalar(
             select(Run.id)
-            .where(Run.conversation_id == conversation_id, Run.status.in_(ACTIVE_STATUSES), Run.created_at > stale_before)
+            .where(
+                Run.conversation_id == conversation_id,
+                # A run waiting for approval has no worker to go stale; the expiry task ends it.
+                or_(Run.status == "awaiting_approval", and_(Run.status.in_(ACTIVE_STATUSES), Run.created_at > stale_before)),
+            )
             .limit(1)
         ):
             raise HTTPException(status_code=409, detail="This conversation already has a run in progress")
@@ -120,9 +124,40 @@ def get_run(run_id: uuid.UUID, db: DbSessionDep, user: DbUserDep) -> RunOut:
 @router.post("/runs/{run_id}/cancel", status_code=202)
 async def cancel_run(run_id: uuid.UUID, db: DbSessionDep, user: DbUserDep) -> RunOut:
     run = await anyio.to_thread.run_sync(_owned_run, db, user.id, run_id)
-    if run.status in ACTIVE_STATUSES:
+    if run.status == "awaiting_approval":
+        # No worker holds a paused run: hand it to one, which sees the flag and finishes it as cancelled.
+        await events.api_events_client().set(cancel_key(run_id), "1", ex=CANCEL_FLAG_TTL_S)
+        await anyio.to_thread.run_sync(lambda: approvals.resume_run(db, redis_client, run, None, take_guards=False))
+        await anyio.to_thread.run_sync(db.refresh, run)
+    elif run.status in ACTIVE_STATUSES:
         # The worker's watcher (or its start-up check, for a queued run) acts on this flag.
         await events.api_events_client().set(cancel_key(run_id), "1", ex=CANCEL_FLAG_TTL_S)
+    return RunOut.model_validate(run)
+
+
+class ApprovalDecision(BaseModel):
+    decision: Literal["approve", "edit", "reject"]
+    edited_code: Annotated[str | None, Field(max_length=MAX_MESSAGE_CHARS)] = None
+    message: Annotated[str | None, Field(max_length=1000)] = None  # why, for a rejection
+
+
+@router.post("/runs/{run_id}/approve", status_code=202)
+def approve_run(run_id: uuid.UUID, body: ApprovalDecision, db: DbSessionDep, user: DbUserDep) -> RunOut:
+    """Answers a run paused for code approval; the same run continues (no quota gate: it is already in flight)."""
+    run = _owned_run(db, user.id, run_id)
+    if body.decision == "edit" and not (body.edited_code or "").strip():
+        raise HTTPException(status_code=422, detail="edited_code is required to edit")
+    if run.status != "awaiting_approval":
+        raise HTTPException(status_code=409, detail="This run is not waiting for approval")
+    decision = {"type": body.decision, "code": body.edited_code, "message": body.message}
+    outcome = approvals.resume_run(db, redis_client, run, decision)
+    if outcome is approvals.Resume.NOT_WAITING:
+        raise HTTPException(status_code=409, detail="This run is not waiting for approval")
+    if outcome is approvals.Resume.CONVERSATION_BUSY:
+        raise HTTPException(status_code=409, detail="This conversation already has a run in progress")
+    if outcome is approvals.Resume.USER_AT_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many runs in progress", headers={"Retry-After": "10"})
+    db.refresh(run)
     return RunOut.model_validate(run)
 
 

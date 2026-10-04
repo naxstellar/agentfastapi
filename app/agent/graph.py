@@ -5,20 +5,22 @@ per-user long-term memory (WP6). Both share one psycopg3 async pool, opened once
 """
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, SummarizationMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent.context import AgentContext, emit
+from app.agent.memory import MEMORY_TOOLS, MemoryMiddleware
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOLS
 from app.config import AGENT_RECURSION_LIMIT, DATABASE_URL, SUMMARIZE_KEEP_MESSAGES, SUMMARIZE_TRIGGER_TOKENS
@@ -62,25 +64,44 @@ class AgentSummarization(SummarizationMiddleware):
         return await super()._acreate_summary(messages_to_summarize)
 
 
+# Names an MCP tool may not take: the built-in tools and the memory tools.
+RESERVED_TOOL_NAMES = frozenset(t.name for t in [*TOOLS, *MEMORY_TOOLS])
+
+
 def build_agent(
     model: BaseChatModel,
     *,
     checkpointer: AsyncPostgresSaver | None = None,
     store: AsyncPostgresStore | None = None,
     summary_model: BaseChatModel | None = None,
+    extra_tools: Sequence[BaseTool] = (),
+    require_approval: bool = False,
 ):
-    """Cheap to call: build one per run with the conversation's model."""
+    """Cheap to call: build one per run with the conversation's model.
+
+    `require_approval` pauses the run before every `run_python` call for the user's decision (WP6C). A resumed
+    run must be built with it on, whatever the user's setting is now: the pause is part of its checkpoint.
+    """
+    middleware = [
+        MemoryMiddleware(),
+        AgentSummarization(
+            summary_model or model,
+            trigger_tokens=SUMMARIZE_TRIGGER_TOKENS,
+            keep_messages=SUMMARIZE_KEEP_MESSAGES,
+        ),
+    ]
+    if require_approval:
+        middleware.append(
+            HumanInTheLoopMiddleware(
+                interrupt_on={"run_python": {"allowed_decisions": ["approve", "edit", "reject"]}},
+                description_prefix="The agent wants to run this code",
+            )
+        )
     return create_agent(
         model,
-        tools=TOOLS,
+        tools=[*TOOLS, *extra_tools],
         system_prompt=SYSTEM_PROMPT,
-        middleware=[
-            AgentSummarization(
-                summary_model or model,
-                trigger_tokens=SUMMARIZE_TRIGGER_TOKENS,
-                keep_messages=SUMMARIZE_KEEP_MESSAGES,
-            )
-        ],
+        middleware=middleware,
         context_schema=AgentContext,
         checkpointer=checkpointer,
         store=store,

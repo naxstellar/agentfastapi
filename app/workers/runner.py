@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,18 +18,21 @@ import redis
 import redis.asyncio
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import BaseTool
+from langgraph.types import Command
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent.context import make_context
-from app.agent.graph import Persistence, build_agent, run_config
+from app.agent.graph import RESERVED_TOOL_NAMES, Persistence, build_agent, run_config
+from app.agent.mcp import load_mcp_tools
 from app.agent.history import TurnRecorder, save_assistant_message
 from app.agent.models import ModelNotConfiguredError, UnknownModelError, make_chat_model
 from app.agent.sandbox import SandboxManager
 from app.agent.usage import UsageCallback
 from app.config import RUN_TIME_LIMIT_S
-from app.models_agent import Conversation, Message, Run
-from app.services import events, quota, run_guard
+from app.models_agent import Conversation, Message, Run, UserSettings
+from app.services import approvals, events, quota, run_guard
 from app.services.quota import Quota
 from app.services.storage import Storage
 
@@ -60,17 +63,25 @@ class RunDeps:
     cancel_poll_s: float = CANCEL_POLL_S
     run_time_limit_s: float = RUN_TIME_LIMIT_S
     quota: Quota | None = None  # defaults to one on guard_client
+    # The MCP servers' tools (never raises); tests replace it.
+    extra_tools_loader: Callable[[], Awaitable[list[BaseTool]]] | None = None
 
     def __post_init__(self) -> None:
         if self.quota is None:
             self.quota = Quota(self.guard_client, self.session_factory)
 
+    async def load_extra_tools(self) -> list[BaseTool]:
+        if self.extra_tools_loader is not None:
+            return await self.extra_tools_loader()
+        return await load_mcp_tools(reserved=RESERVED_TOOL_NAMES)
+
 
 @dataclass
 class Outcome:
-    status: str  # succeeded | failed | cancelled
+    status: str  # succeeded | failed | cancelled | awaiting_approval (a pause, not an end)
     error: str | None = None
     code: str | None = None
+    approvals: list[dict] | None = None  # for a pause: [{tool_call_id, code}, ...]
 
 
 def _utcnow() -> datetime:
@@ -143,9 +154,23 @@ async def _watch_cancel(deps: RunDeps, run_id: uuid.UUID) -> None:
         await asyncio.sleep(deps.cancel_poll_s)
 
 
-async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: TurnRecorder) -> None:
+def _wants_approval(deps: RunDeps, user_id: uuid.UUID) -> bool:
+    with deps.session_factory() as db:
+        return bool(db.scalar(select(UserSettings.require_code_approval).where(UserSettings.user_id == user_id)))
+
+
+async def _stream(
+    deps: RunDeps, run: Run, model_id: str, text: str, recorder: TurnRecorder, decision: dict | None = None
+) -> list[dict] | None:
+    """Streams the agent. Returns the pending code approvals if the run paused for them, else None."""
+    # A resumed run needs the approval step in its graph whatever the setting is now (its checkpoint is paused there).
+    require_approval = decision is not None or await asyncio.to_thread(_wants_approval, deps, run.user_id)
     agent = build_agent(
-        deps.model_factory(model_id), checkpointer=deps.persistence.checkpointer, store=deps.persistence.store
+        deps.model_factory(model_id),
+        checkpointer=deps.persistence.checkpointer,
+        store=deps.persistence.store,
+        extra_tools=await deps.load_extra_tools(),
+        require_approval=require_approval,
     )
     config = run_config(run.conversation_id, run.id)
     # Callbacks in the config reach every LLM call of the run, the summarizer's included.
@@ -166,10 +191,15 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
     resumed = (snapshot.metadata or {}).get("run_id") == str(run.id)
     if resumed:
         _seed_from_checkpoint(recorder, snapshot.values.get("messages", []), run.id)
-        await events.publish(deps.events_client, run.id, "run_resumed", {"run_id": str(run.id), "reason": "redelivery"})
-        graph_input = None
+        if decision is not None and snapshot.interrupts:  # the user answered a code approval
+            reason = "approval"
+            graph_input = Command(resume={"decisions": decisions_for(decision, snapshot.interrupts)})
+        else:  # a redelivery (a stale `decision` whose pause was already answered is one too)
+            reason = "redelivery"
+            graph_input = None
+        await events.publish(deps.events_client, run.id, "run_resumed", {"run_id": str(run.id), "reason": reason})
         if not snapshot.next:  # crashed after the graph finished, before finalizing
-            return
+            return None
     else:
         await events.publish(deps.events_client, run.id, "run_started", {"run_id": str(run.id)})
         # An earlier run that was cancelled or failed mid-tool leaves tool calls without results, which providers
@@ -178,6 +208,7 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
         graph_input = {"messages": [*closing, HumanMessage(text, id=f"run-{run.id}")]}
 
     tokens = _TokenBuffer(deps, run.id)
+    interrupted = False
     try:
         async for mode, chunk in agent.astream(
             graph_input, config=config, context=context, stream_mode=["messages", "updates", "custom"]
@@ -195,6 +226,8 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
                 continue
             await tokens.flush()  # keep tokens ordered before the event that follows them
             if mode == "updates":
+                if "__interrupt__" in chunk:
+                    interrupted = True
                 recorder.add_update(chunk)
                 for node, values in chunk.items():
                     if isinstance(values, dict):
@@ -206,7 +239,41 @@ async def _stream(deps: RunDeps, run: Run, model_id: str, text: str, recorder: T
             await tokens.flush()
         with suppress(Exception):
             await usage.charge_unfinished()  # a call cut short by cancel/timeout is still billed
+    if interrupted:
+        return pending_approvals(await agent.aget_state(config))
+    return None
 
+
+def _code_calls(messages: list) -> list[dict]:
+    """`run_python` calls of the last AI message, in order: the ones the approval step asks about."""
+    last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    return [c for c in (last_ai.tool_calls if last_ai else []) if c["name"] == "run_python"]
+
+
+def _action_requests(interrupts) -> list[dict]:
+    return [r for i in interrupts for r in (i.value or {}).get("action_requests", [])]
+
+
+def pending_approvals(snapshot) -> list[dict]:
+    """[{tool_call_id, code}] for the actions a paused run waits on."""
+    calls = _code_calls(snapshot.values.get("messages", []))
+    return [
+        {"tool_call_id": calls[n]["id"] if n < len(calls) else None, "code": str(r.get("args", {}).get("code", ""))}
+        for n, r in enumerate(_action_requests(snapshot.interrupts))
+    ]
+
+
+def decisions_for(decision: dict, interrupts) -> list[dict]:
+    """One decision per pending action, from the user's single answer: {type, code?, message?}."""
+    requests = _action_requests(interrupts)
+    kind = decision.get("type")
+    if kind == "edit" and len(requests) != 1:
+        return [{"type": "reject", "message": "Edits are only possible when one code block is pending."}] * len(requests)
+    if kind == "edit":
+        return [{"type": "edit", "edited_action": {"name": requests[0]["name"], "args": {"code": decision.get("code", "")}}}]
+    if kind == "reject":
+        return [{"type": "reject", "message": decision.get("message") or "The user rejected this code."}] * len(requests)
+    return [{"type": "approve"}] * len(requests)
 
 class _TokenBuffer:
     """Coalesces token deltas into fewer stream entries (a long answer is thousands of tiny deltas, which would
@@ -268,7 +335,7 @@ async def _publish_update(deps: RunDeps, run_id: uuid.UUID, node: str, messages:
                         "tool_call",
                         {"tool_call_id": call["id"], "name": call["name"], "args": call["args"]},
                     )
-    elif node == "tools":
+    elif node == "tools" or node.endswith(".after_model"):  # the approval step's rejection is a tool result too
         for message in messages:
             if isinstance(message, ToolMessage):
                 output = message.text
@@ -278,16 +345,20 @@ async def _publish_update(deps: RunDeps, run_id: uuid.UUID, node: str, messages:
                 await events.publish(deps.events_client, run_id, "tool_result", data)
 
 
-async def _run_to_outcome(deps: RunDeps, run: Run, model_id: str, text: str, recorder: TurnRecorder) -> Outcome:
+async def _run_to_outcome(
+    deps: RunDeps, run: Run, model_id: str, text: str, recorder: TurnRecorder, decision: dict | None = None
+) -> Outcome:
     """Streams the agent until it finishes, is cancelled, times out or fails. Never raises, except that a
     CancelledError aimed at this coroutine (worker shutdown) propagates so the run is redelivered."""
-    stream = asyncio.create_task(_stream(deps, run, model_id, text, recorder))
+    stream = asyncio.create_task(_stream(deps, run, model_id, text, recorder, decision))
     watcher = asyncio.create_task(_watch_cancel(deps, run.id))
     try:
         done, _ = await asyncio.wait({stream, watcher}, timeout=deps.run_time_limit_s, return_when=asyncio.FIRST_COMPLETED)
         if stream in done:
             exc = stream.exception()
             if exc is None:
+                if pending := stream.result():
+                    return Outcome("awaiting_approval", approvals=pending)
                 return Outcome("succeeded")
             return _failure(run.id, exc)
         stream.cancel()
@@ -311,9 +382,9 @@ def _failure(run_id: uuid.UUID, exc: BaseException) -> Outcome:
     return Outcome("failed", "The run failed unexpectedly", "internal")
 
 
-async def execute_run(deps: RunDeps, run_id: uuid.UUID) -> None:
+async def execute_run(deps: RunDeps, run_id: uuid.UUID, decision: dict | None = None) -> None:
     try:
-        await _execute(deps, run_id)
+        await _execute(deps, run_id, decision)
     except Exception as exc:
         # Celery acks the task even when it raises, so nothing would redeliver it: without this, a run whose
         # setup or finalization failed would stay queued/running (409 for its conversation) with a hung stream.
@@ -333,7 +404,7 @@ async def _fail_stuck_run(deps: RunDeps, run_id: uuid.UUID, exc: Exception) -> N
         raise
 
 
-async def _execute(deps: RunDeps, run_id: uuid.UUID) -> None:
+async def _execute(deps: RunDeps, run_id: uuid.UUID, decision: dict | None = None) -> None:
     loaded = await asyncio.to_thread(_load, deps, run_id)
     if loaded is None:
         logger.warning("Run id=%s no longer exists", run_id)
@@ -352,13 +423,40 @@ async def _execute(deps: RunDeps, run_id: uuid.UUID) -> None:
         if await deps.events_client.exists(cancel_key(run_id)):
             outcome = Outcome("cancelled")  # cancelled while queued
         else:
-            outcome = await _run_to_outcome(deps, run, model_id, text, recorder)
+            outcome = await _run_to_outcome(deps, run, model_id, text, recorder, decision)
     finally:
         # outcome is None only when this coroutine itself was cancelled (worker shutdown) or the setup above
         # raised: for the first, leave the run `running` with its guards so the broker's redelivery resumes it;
         # for the second, execute_run() fails the run.
-        if outcome is not None:
+        if outcome is not None and outcome.status == "awaiting_approval":
+            await _pause_run(deps, run, outcome)
+        elif outcome is not None:
             await _finish_run(deps, run, outcome, recorder)
+
+
+async def _pause_run(deps: RunDeps, run: Run, outcome: Outcome) -> None:
+    """The run waits for the user's decision on its code: no worker, no concurrency slot, stream kept open.
+    `POST /runs/{id}/approve` (or the expiry task) resumes the same run."""
+    for request in outcome.approvals or []:
+        await events.publish(deps.events_client, run.id, "approval_required", request)
+    paused = await asyncio.to_thread(_mark_awaiting_approval, deps, run.id)
+    try:
+        if paused:
+            await asyncio.to_thread(approvals.register_pending, deps.guard_client, run.id)
+    finally:
+        await asyncio.to_thread(run_guard.release, deps.guard_client, run.user_id, run.conversation_id, run.id)
+
+
+def _mark_awaiting_approval(deps: RunDeps, run_id: uuid.UUID) -> bool:
+    with deps.session_factory() as db:
+        result = db.execute(
+            update(Run)
+            .where(Run.id == run_id, Run.status == "running")
+            .values(status="awaiting_approval")
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+        return result.rowcount == 1
 
 
 PUBLISH_ATTEMPTS = 3

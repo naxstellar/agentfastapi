@@ -28,9 +28,14 @@ class TurnRecorder:
 
     def add_update(self, update: dict) -> None:
         for node, values in update.items():
-            if node not in _TURN_NODES or not isinstance(values, dict):
+            if not isinstance(values, dict):
                 continue
-            self.messages.extend(m for m in values.get("messages", []) if isinstance(m, (AIMessage, ToolMessage)))
+            if node in _TURN_NODES:
+                self.messages.extend(m for m in values.get("messages", []) if isinstance(m, (AIMessage, ToolMessage)))
+            elif node.endswith(".after_model"):
+                # The approval step re-emits the (maybe edited) AI message, which the model node already gave us;
+                # only a rejection's tool result is new.
+                self.messages.extend(m for m in values.get("messages", []) if isinstance(m, ToolMessage))
 
     def content(self) -> dict:
         return assistant_content(self.messages)
