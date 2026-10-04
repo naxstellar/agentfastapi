@@ -76,6 +76,13 @@
     <ul id="memories-list" class="plain-list"></ul>
   </dialog>
 
+  <dialog id="quota-dialog" role="alertdialog" aria-labelledby="quota-title">
+    <div class="dialog-head"><h3 id="quota-title">Daily limit reached</h3></div>
+    <p>You've used all of today's token budget, so new messages are paused.</p>
+    <p>Your budget resets at <strong id="quota-reset"></strong> (your local time). Your conversations and files are safe, and the message you typed is still in the box.</p>
+    <button id="quota-close" type="button" class="primary">OK</button>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="/static/vendor/marked.min.js"></script>

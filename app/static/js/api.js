@@ -64,7 +64,9 @@ export async function api(path, { method = "GET", body } = {}) {
       retryAfter && retryAfter >= 60
         ? `Daily token budget used up. It resets at ${resetMessage(retryAfter)}.`
         : "Too many runs in progress. Try again in a few seconds.";
-    throw new ApiError(429, message, retryAfter);
+    const error = new ApiError(429, message, retryAfter);
+    error.quota = Boolean(retryAfter && retryAfter >= 60); // the daily budget, not the concurrency limit
+    throw error;
   }
   if (response.status === 503) throw new ApiError(503, detailText(data, "A service is unavailable. Try again shortly."));
   throw new ApiError(response.status, detailText(data, `Request failed (${response.status})`));

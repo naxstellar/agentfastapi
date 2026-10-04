@@ -26,9 +26,16 @@ async function refreshUsage() {
     const usage = await api("/usage");
     showUsage(usage);
     $("usage").title = `Resets at ${resetMessage((new Date(usage.reset_at) - Date.now()) / 1000)}`;
+    return usage;
   } catch {
     /* the meter is informational */
   }
+}
+
+function showQuotaDialog(retryAfterSeconds) {
+  $("quota-reset").textContent = resetMessage(retryAfterSeconds);
+  if (!$("quota-dialog").open) $("quota-dialog").showModal();
+  refreshUsage();
 }
 
 // ---- conversations --------------------------------------------------------------------------
@@ -167,7 +174,9 @@ const chat = new Chat({
     $("datasets-open").disabled = false;
   },
   onRunEnded: async (conversation, { started }) => {
-    refreshUsage();
+    const usage = await refreshUsage();
+    // A run that just used up the budget: tell the user now rather than on their next failed send.
+    if (!started && usage && usage.used >= usage.limit) showQuotaDialog((new Date(usage.reset_at) - Date.now()) / 1000);
     if (!conversation) return;
     try {
       // The first run names the conversation; pick that up (and anything else) from the server.
@@ -177,6 +186,7 @@ const chat = new Chat({
     }
   },
   ensureConversation: createConversation,
+  onQuotaExceeded: showQuotaDialog,
 });
 
 const datasets = new DatasetsPanel({
@@ -200,6 +210,7 @@ async function boot() {
   $("new-chat").addEventListener("click", newChat);
   $("more-conversations").addEventListener("click", () => loadConversations(true).catch((e) => toast(e.message)));
   $("model").addEventListener("change", changeModel);
+  $("quota-close").addEventListener("click", () => $("quota-dialog").close());
   $("nav-toggle").addEventListener("click", () => document.body.classList.toggle("nav-open"));
   onNetworkChange((online) => ($("offline").hidden = online));
 

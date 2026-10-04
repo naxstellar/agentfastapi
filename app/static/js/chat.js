@@ -10,7 +10,7 @@ const EVENT_TYPES = [
 ];
 
 export class Chat {
-  constructor({ onUsage, onRunEnded, onActiveChange, ensureConversation }) {
+  constructor({ onUsage, onRunEnded, onActiveChange, ensureConversation, onQuotaExceeded }) {
     this.el = {
       messages: document.getElementById("messages"),
       older: document.getElementById("load-older"),
@@ -20,7 +20,7 @@ export class Chat {
       status: document.getElementById("run-status"),
       conn: document.getElementById("conn"),
     };
-    this.hooks = { onUsage, onRunEnded, onActiveChange, ensureConversation };
+    this.hooks = { onUsage, onRunEnded, onActiveChange, ensureConversation, onQuotaExceeded };
     this.conv = null;
     this.gen = 0; // bumped on every open(): late responses for a previous conversation are dropped
     this.stream = null;
@@ -194,6 +194,8 @@ export class Chat {
       if (error instanceof ApiError && error.status === 409) {
         toast("A run is already in progress in this conversation.");
         this.open(this.conv); // pick up the run that is actually active
+      } else if (error.quota) {
+        this.hooks.onQuotaExceeded(error.retryAfter); // the typed text stays in the box
       } else {
         toast(error.message);
       }
