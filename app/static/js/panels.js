@@ -170,7 +170,10 @@ export class DatasetsPanel {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(upload.method, upload.url);
-      Object.entries(upload.headers).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+      // Host is part of the signed headers but the browser sets it itself (and refuses a script setting it).
+      Object.entries(upload.headers)
+        .filter(([name]) => name.toLowerCase() !== "host")
+        .forEach(([name, value]) => xhr.setRequestHeader(name, value));
       xhr.upload.onprogress = (event) => event.lengthComputable && onProgress(Math.round((event.loaded / event.total) * 100));
       xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`storage rejected the file (${xhr.status})`)));
       xhr.onerror = () => reject(new Error("network error while uploading"));
