@@ -1,10 +1,9 @@
 # Celery worker and beat: the same image as the api (one image, different command).
-# Google ADC comes from the agentfastapi-gcp-adc secret (created by k8s-up.ps1 from the laptop's ADC file; optional).
+# Google credentials come from Workload Identity (dev/staging) or the local overlay's ADC secret.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
-  namespace: agentfastapi
 spec:
   replicas: 1
   selector:
@@ -15,46 +14,43 @@ spec:
       labels:
         app: worker
     spec:
+      serviceAccountName: worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
-          image: agentfastapi-api:local
-          imagePullPolicy: Never
+          image: agentfastapi-app
           command: [celery, -A, app.workers.celery_app, worker, --pool=threads, --concurrency=4, --loglevel=INFO]
           envFrom:
             - secretRef:
                 name: agentfastapi-secrets
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentfastapi-postgres
-                  key: DATABASE_URL
-            - name: REDIS_URL
-              value: redis://redis:6379/0
-            - name: GOOGLE_APPLICATION_CREDENTIALS
-              value: /var/run/gcp/adc.json
-          volumeMounts:
-            - name: gcp-adc
-              mountPath: /var/run/gcp
-              readOnly: true
+            - configMapRef:
+                name: agentfastapi-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 2Gi
           livenessProbe:
             exec:
               command: [sh, -c, "celery -A app.workers.celery_app inspect ping -d celery@$HOSTNAME"]
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 15
-      volumes:
-        - name: gcp-adc
-          secret:
-            secretName: agentfastapi-gcp-adc
-            optional: true
 ---
 # Exactly one beat: it schedules agent.expire_approvals. Recreate, so a rollout never runs two at once.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: beat
-  namespace: agentfastapi
 spec:
   replicas: 1
   strategy:
@@ -67,19 +63,28 @@ spec:
       labels:
         app: beat
     spec:
+      serviceAccountName: worker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: beat
-          image: agentfastapi-api:local
-          imagePullPolicy: Never
+          image: agentfastapi-app
           command: [celery, -A, app.workers.celery_app, beat, --loglevel=INFO, --schedule, /tmp/celerybeat-schedule]
           envFrom:
             - secretRef:
                 name: agentfastapi-secrets
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentfastapi-postgres
-                  key: DATABASE_URL
-            - name: REDIS_URL
-              value: redis://redis:6379/0
+            - configMapRef:
+                name: agentfastapi-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 256Mi

@@ -1,0 +1,40 @@
+# Schema setup (alembic upgrade head + LangGraph setup()); run it, and wait for it, BEFORE rolling out the api and
+# worker. Jobs are immutable: delete the old one (or give it a new name per release, as CI does) before applying.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  backoffLimit: 6  # retries while Postgres is still starting
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: agentfastapi-app
+          command: [python, -m, app.migrate]
+          envFrom:
+            - secretRef:
+                name: agentfastapi-secrets
+            - configMapRef:
+                name: agentfastapi-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi

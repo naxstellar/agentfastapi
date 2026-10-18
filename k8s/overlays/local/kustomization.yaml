@@ -1,0 +1,50 @@
+# Docker Desktop's Kubernetes: in-cluster Postgres/Redis, the mkcert cert served by the api, a locally built image
+# (loaded into the node by scripts/k8s-up.ps1, so imagePullPolicy: Never), the laptop's ADC mounted as a secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentfastapi
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - ../../base
+images:
+  - name: agentfastapi-app
+    newName: agentfastapi-api
+    newTag: local
+configMapGenerator:
+  - name: agentfastapi-config
+    literals:
+      - APP_ENV=local
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: api
+      spec:
+        type: LoadBalancer
+  # Every workload: the local image, and the in-cluster database/redis (env wins over the .env-derived secret).
+  - target: {kind: Deployment, name: "api|worker|beat"}
+    patch: |-
+      - {op: add, path: /spec/template/spec/containers/0/imagePullPolicy, value: Never}
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: DATABASE_URL
+            valueFrom: {secretKeyRef: {name: agentfastapi-postgres, key: DATABASE_URL}}
+          - {name: REDIS_URL, value: "redis://redis:6379/0"}
+  - target: {kind: Job}
+    patch: |-
+      - {op: add, path: /spec/template/spec/containers/0/imagePullPolicy, value: Never}
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: DATABASE_URL
+            valueFrom: {secretKeyRef: {name: agentfastapi-postgres, key: DATABASE_URL}}
+          - {name: REDIS_URL, value: "redis://redis:6379/0"}
+  # Strategic patches last: they merge into the env list created above.
+  - path: patch-api.yaml
+  - path: patch-worker.yaml

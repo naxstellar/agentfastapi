@@ -46,7 +46,7 @@ Remove-Item $imageTar -ErrorAction SilentlyContinue
 Write-Host "Ensuring namespace 'agentfastapi' exists..."
 kubectl get namespace agentfastapi *> $null
 if (-not $?) {
-    kubectl apply -f k8s/namespace.yaml
+    kubectl apply -f k8s/overlays/local/namespace.yaml
 }
 
 Write-Host "Ensuring secrets exist..."
@@ -96,16 +96,19 @@ if (-not $?) {
 }
 
 Write-Host "Applying manifests..."
-kubectl apply -f k8s/postgres.yaml
-kubectl apply -f k8s/redis.yaml
-kubectl apply -f k8s/api.yaml
-kubectl apply -f k8s/worker.yaml
+# Jobs are immutable, so the schema Job is replaced on every run; it retries until Postgres is up.
+kubectl delete job migrate -n agentfastapi --ignore-not-found
+kubectl apply -k k8s/overlays/local
 
 # Re-running this script rebuilds and reloads the image under the same tag, but an unchanged
 # Deployment spec won't make Kubernetes pick it up on its own -- force it.
 Write-Host "Restarting the api, worker and beat deployments so they pick up the freshly loaded image..."
 kubectl rollout restart deployment/api -n agentfastapi
 kubectl rollout restart deployment/worker deployment/beat -n agentfastapi
+kubectl wait --for=condition=complete job/migrate -n agentfastapi --timeout=180s
+if (-not $?) {
+    Write-Warning "The migrate Job did not complete: kubectl logs job/migrate -n agentfastapi"
+}
 kubectl rollout status deployment/api -n agentfastapi --timeout=120s
 kubectl rollout status deployment/worker -n agentfastapi --timeout=180s
 kubectl rollout status deployment/beat -n agentfastapi --timeout=120s

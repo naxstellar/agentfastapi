@@ -6,6 +6,7 @@ from pathlib import Path
 import google.auth.exceptions
 import kombu.exceptions
 from fastapi import FastAPI, Request
+from sqlalchemy import text
 from fastapi.responses import FileResponse, JSONResponse
 from google.api_core.exceptions import GoogleAPIError
 from fastapi.staticfiles import StaticFiles
@@ -14,10 +15,10 @@ from starlette.middleware.sessions import SessionMiddleware
 import app.models  # noqa: F401 - registers User with Base.metadata
 import app.models_agent  # noqa: F401 - registers agent tables (conversations, runs, ...)
 from app.auth.routes import router as auth_router
-from app.config import SESSION_SECRET_KEY
+from app.config import APP_VERSION, IS_LOCAL, SESSION_SECRET_KEY
 from app.db import Base, engine
 from app.observability import configure_logging
-from app.redis_client import async_redis_client
+from app.redis_client import async_redis_client, redis_client
 from app.routers.api_v1 import router as api_v1_router
 from app.services.events import api_events_client
 
@@ -27,7 +28,8 @@ logger = logging.getLogger("app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    if IS_LOCAL:  # elsewhere the schema comes from `python -m app.migrate` (Alembic), run before each rollout
+        Base.metadata.create_all(bind=engine)
     yield
     await async_redis_client.aclose()
     await api_events_client().aclose()
@@ -85,3 +87,30 @@ def read_index() -> FileResponse:
 @app.get("/api/hello")
 def read_hello() -> dict[str, str]:
     return {"message": "Hello, HTTPS!"}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    """Liveness: the process answers. Deliberately touches no dependency, so an outage never restarts the pods."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
+    """Readiness: Postgres and Redis answer. Reports the failing dependency by name only (never the error text)."""
+    failed = []
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("readyz: postgres failed: %s", type(exc).__name__)
+        failed.append("postgres")
+    try:
+        redis_client.ping()
+    except Exception as exc:
+        logger.warning("readyz: redis failed: %s", type(exc).__name__)
+        failed.append("redis")
+    body = {"status": "unavailable" if failed else "ok", "version": APP_VERSION}
+    if failed:
+        body["failed"] = failed
+    return JSONResponse(status_code=503 if failed else 200, content=body)

@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 import app.auth.redis_state  # noqa: E402
 import app.auth.session_store  # noqa: E402
+import app.main  # noqa: E402
 import app.redis_client  # noqa: E402
 import app.routers.conversations  # noqa: E402
 import app.routers.runs  # noqa: E402
@@ -57,6 +58,7 @@ from app.db import Base, get_db  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.models import User  # noqa: E402
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
 TEST_SUB = "auth0|test-user"
 
 
@@ -142,7 +144,7 @@ def redis_db(redis_server, monkeypatch):
     client = redis.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
     client.flushdb()
     # Every module that does `from app.redis_client import redis_client` needs patching.
-    for module in (app.redis_client, app.auth.session_store, app.auth.redis_state, app.workers.datasets, app.routers.runs, app.routers.usage, app.routers.conversations):
+    for module in (app.redis_client, app.main, app.auth.session_store, app.auth.redis_state, app.workers.datasets, app.routers.runs, app.routers.usage, app.routers.conversations):
         monkeypatch.setattr(module, "redis_client", client)
     yield client
     client.flushdb()

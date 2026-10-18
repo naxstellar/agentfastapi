@@ -27,6 +27,7 @@ class JsonFormatter(logging.Formatter):
         entry = {
             "time": self.formatTime(record),
             "level": record.levelname,
+            "severity": record.levelname,  # Cloud Logging reads this field
             "logger": record.name,
             "message": record.getMessage(),
             "run_id": getattr(record, "run_id", "-"),
@@ -43,7 +44,9 @@ TEXT_FORMAT = "%(asctime)s %(name)s %(levelname)s [run=%(run_id)s user=%(user_id
 def configure_logging(level: int = logging.INFO) -> None:
     handler = logging.StreamHandler()
     handler.addFilter(ContextFilter())
-    handler.setFormatter(JsonFormatter() if os.getenv("LOG_FORMAT", "text").lower() == "json" else logging.Formatter(TEXT_FORMAT))
+    # JSON unless running locally (Cloud Logging parses it); LOG_FORMAT overrides either way.
+    log_format = (os.getenv("LOG_FORMAT") or ("text" if (os.getenv("APP_ENV") or "local") == "local" else "json")).lower()
+    handler.setFormatter(JsonFormatter() if log_format == "json" else logging.Formatter(TEXT_FORMAT))
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)

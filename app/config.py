@@ -32,7 +32,8 @@ SESSION_SECRET_KEY = os.environ["SESSION_SECRET_KEY"]
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/"
 AUTH0_JWKS_URL = f"https://{AUTH0_DOMAIN}/.well-known/jwks.json"
 
-APP_ENV = os.environ.get("APP_ENV") or "local"
+APP_ENV = os.environ.get("APP_ENV") or "local"  # local | dev | staging | prod
+IS_LOCAL = APP_ENV == "local"
 APP_VERSION = os.environ.get("APP_VERSION") or "dev"
 
 # Agent-service secrets are optional at boot so the auth-only app keeps running without them.

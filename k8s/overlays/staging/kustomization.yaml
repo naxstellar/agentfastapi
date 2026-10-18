@@ -1,0 +1,57 @@
+# GKE Autopilot (staging). Placeholders to replace in WP11/WP12 once the real values exist:
+#   SUFFIX (project ids), example.com (domain), the shared Artifact Registry path, AGENT_ENGINE_NAME, bucket name.
+# CI sets the image tag: `kustomize edit set image agentfastapi-app=<registry>/app:sha-<sha>`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentfastapi
+resources:
+  - ../../base
+  - namespace.yaml
+  - ingress.yaml
+  - externalsecret.yaml
+images:
+  - name: agentfastapi-app
+    newName: asia-south1-docker.pkg.dev/agentfastapi-shared-SUFFIX/agentfastapi/app
+    newTag: latest-staging
+configMapGenerator:
+  - name: agentfastapi-config
+    literals:
+      - APP_ENV=staging
+      - APP_BASE_URL=https://staging.example.com
+      - AUTH0_CALLBACK_URL=https://staging.example.com/callback
+      - AUTH0_DOMAIN=REPLACE.us.auth0.com
+      - AUTH0_AUDIENCE=https://api.staging.example.com/
+      - GCS_BUCKET=agentfastapi-staging-data-SUFFIX
+      - GCS_SIGNER_SERVICE_ACCOUNT=api@agentfastapi-staging-SUFFIX.iam.gserviceaccount.com
+      - AGENT_ENGINE_NAME=projects/NUMBER/locations/asia-south1/reasoningEngines/ID
+replicas:
+  - name: api
+    count: 2
+  - name: worker
+    count: 2
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: api
+        annotations:
+          iam.gke.io/gcp-service-account: api@agentfastapi-staging-SUFFIX.iam.gserviceaccount.com
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: worker
+        annotations:
+          iam.gke.io/gcp-service-account: worker@agentfastapi-staging-SUFFIX.iam.gserviceaccount.com
+  # Container-native load balancing, and the BackendConfig that keeps SSE streams open (see ingress.yaml).
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: api
+        annotations:
+          cloud.google.com/neg: '{"ingress": true}'
+          cloud.google.com/backend-config: '{"default": "api"}'

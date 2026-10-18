@@ -1,0 +1,14 @@
+# Environment-neutral manifests. Overlays add the namespace, the agentfastapi-config ConfigMap, secrets wiring,
+# the image name/tag and anything environment-specific (ingress, TLS, in-cluster Postgres/Redis, ...).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccounts.yaml
+  - api.yaml
+  - worker.yaml
+  - migrate-job.yaml
+  - pdb.yaml
+  - hpa.yaml
+images:
+  - name: agentfastapi-app
+    newName: agentfastapi-app
