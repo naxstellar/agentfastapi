@@ -14,3 +14,10 @@ logs/
 
 # Markdown docs/notes stay local (CLAUDE.md, plan.md, README.md, docs/, skills)
 *.md
+
+# Terraform: providers, local state, real variable values
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+crash.log
