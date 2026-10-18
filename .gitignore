@@ -11,3 +11,6 @@ env/
 logs/
 .run/
 /.archify/
+
+# Markdown docs/notes stay local (CLAUDE.md, plan.md, README.md, docs/, skills)
+*.md
