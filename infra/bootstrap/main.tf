@@ -48,6 +48,10 @@ resource "google_project" "shared" {
   name                = local.shared_project
   billing_account     = var.billing_account
   auto_create_network = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Created by hand earlier (see EXTERNAL_RESOURCES.md); imported, not recreated.
@@ -61,6 +65,10 @@ resource "google_project" "dev" {
   name                = local.dev_project
   billing_account     = var.billing_account
   auto_create_network = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_project" "staging" {
@@ -68,6 +76,10 @@ resource "google_project" "staging" {
   name                = local.staging_project
   billing_account     = var.billing_account
   auto_create_network = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_project_service" "shared" {

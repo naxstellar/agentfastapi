@@ -22,6 +22,11 @@ resource "google_storage_bucket" "tfstate" {
     }
   }
 
+  # Losing this bucket loses the record of everything Terraform manages.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   depends_on = [google_project_service.shared]
 }
 
