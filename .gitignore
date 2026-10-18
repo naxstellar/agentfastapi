@@ -10,3 +10,4 @@ env/
 
 logs/
 .run/
+/.archify/
