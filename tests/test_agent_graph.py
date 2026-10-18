@@ -43,9 +43,9 @@ def storage():
 
 
 @pytest.fixture
-def manager(fake_async_redis, provider):
+def manager(async_redis_db, provider):
     return SandboxManager(
-        provider, SandboxSlots(fake_async_redis, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=5, sleep=no_sleep
+        provider, SandboxSlots(async_redis_db, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=5, sleep=no_sleep
     )
 
 

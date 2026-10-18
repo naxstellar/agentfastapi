@@ -5,6 +5,7 @@ import sys
 import uuid
 from base64 import b64encode
 from pathlib import Path
+from urllib.parse import urlparse
 
 import itsdangerous
 import pytest
@@ -20,10 +21,15 @@ for _key, _value in {
     "AUTH0_AUDIENCE": "https://test-audience/",
     "AUTH0_CALLBACK_URL": "https://testserver/callback",
     "APP_BASE_URL": "https://testserver",
-    "REDIS_URL": "redis://localhost:6379/15",
     "SESSION_SECRET_KEY": "test-session-secret",
 }.items():
     os.environ.setdefault(_key, _value)
+# Forced (not setdefault): a REDIS_URL exported in the shell (start.ps1 pins DB 0) must never reach the tests.
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL") or "redis://127.0.0.1:6379/15"
+os.environ["REDIS_URL"] = TEST_REDIS_URL
+_REDIS_DB = int(urlparse(TEST_REDIS_URL).path.lstrip("/") or 0)
+if _REDIS_DB in (0, 1, 2):  # dev sessions/state, Celery broker, event streams
+    pytest.exit(f"TEST_REDIS_URL uses DB {_REDIS_DB}, which the dev app uses; pick another DB (default 15).", returncode=2)
 os.environ.setdefault(
     "DATABASE_URL",
     os.environ.get("TEST_DATABASE_URL")
@@ -31,8 +37,9 @@ os.environ.setdefault(
     or "postgresql+psycopg2://agentfastapi:agentfastapi@localhost:5432/agentfastapi",
 )
 
-import fakeredis  # noqa: E402
 import httpx  # noqa: E402
+import redis  # noqa: E402
+import redis.asyncio  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 from sqlalchemy.exc import OperationalError  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
@@ -119,20 +126,37 @@ def db(db_engine):
     connection.close()
 
 
+@pytest.fixture(scope="session")
+def redis_server():
+    probe = redis.Redis.from_url(TEST_REDIS_URL)
+    try:
+        probe.ping()
+    except redis.RedisError as exc:
+        pytest.skip(f"Redis not reachable at {TEST_REDIS_URL} (start it with `docker compose up -d`): {exc}")
+    finally:
+        probe.close()
+
+
 @pytest.fixture
-def fake_redis(monkeypatch):
-    client = fakeredis.FakeRedis(decode_responses=True)
+def redis_db(redis_server, monkeypatch):
+    client = redis.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    client.flushdb()
     # Every module that does `from app.redis_client import redis_client` needs patching.
     for module in (app.redis_client, app.auth.session_store, app.auth.redis_state, app.workers.datasets, app.routers.runs, app.routers.usage, app.routers.conversations):
         monkeypatch.setattr(module, "redis_client", client)
-    return client
+    yield client
+    client.flushdb()
+    client.close()
 
 
 @pytest.fixture
-def fake_async_redis(monkeypatch):
-    client = fakeredis.FakeAsyncRedis(decode_responses=True)
+async def async_redis_db(redis_server, monkeypatch):
+    client = redis.asyncio.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    await client.flushdb()
     monkeypatch.setattr(app.redis_client, "async_redis_client", client)
-    return client
+    yield client
+    await client.flushdb()
+    await client.aclose()
 
 
 def make_client(asgi_app) -> httpx.AsyncClient:
@@ -141,7 +165,7 @@ def make_client(asgi_app) -> httpx.AsyncClient:
 
 
 @pytest.fixture
-async def client(fake_redis):
+async def client(redis_db):
     async with make_client(fastapi_app) as c:
         yield c
     fastapi_app.dependency_overrides.clear()

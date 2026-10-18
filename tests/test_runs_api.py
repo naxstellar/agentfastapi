@@ -22,9 +22,9 @@ def enqueued(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def events_client(monkeypatch, fake_async_redis):
-    monkeypatch.setattr(events, "api_events_client", lambda: fake_async_redis)
-    return fake_async_redis
+def events_client(monkeypatch, async_redis_db):
+    monkeypatch.setattr(events, "api_events_client", lambda: async_redis_db)
+    return async_redis_db
 
 
 @pytest.fixture
@@ -58,9 +58,9 @@ async def test_second_run_on_a_conversation_is_409(authed_client, conversation, 
     assert len(enqueued) == 1
 
 
-async def test_409_survives_a_redis_flush(authed_client, db, conversation, enqueued, fake_redis):
+async def test_409_survives_a_redis_flush(authed_client, db, conversation, enqueued, redis_db):
     assert (await post_run(authed_client, conversation.id)).status_code == 202
-    fake_redis.flushall()
+    redis_db.flushdb()
     assert (await post_run(authed_client, conversation.id)).status_code == 409
     assert db.scalar(select(Message.id).where(Message.conversation_id == conversation.id).limit(1))
     assert len(db.scalars(select(Message).where(Message.conversation_id == conversation.id)).all()) == 1
@@ -79,7 +79,7 @@ async def test_user_cap_is_429(authed_client, db, user, enqueued, monkeypatch):
     assert db.scalar(select(Run).where(Run.conversation_id == conversations[2].id)) is None
 
 
-async def test_enqueue_failure_frees_the_guards(authed_client, db, conversation, monkeypatch, fake_redis):
+async def test_enqueue_failure_frees_the_guards(authed_client, db, conversation, monkeypatch, redis_db):
     def broken(**kwargs):
         raise RuntimeError("broker down")
 
@@ -88,7 +88,7 @@ async def test_enqueue_failure_frees_the_guards(authed_client, db, conversation,
         await post_run(authed_client, conversation.id)
     run = db.scalar(select(Run).where(Run.conversation_id == conversation.id))
     assert run.status == "failed"
-    assert run_guard.acquire(fake_redis, run.user_id, conversation.id, uuid.uuid4()) is run_guard.Admission.OK
+    assert run_guard.acquire(redis_db, run.user_id, conversation.id, uuid.uuid4()) is run_guard.Admission.OK
 
 
 async def test_message_is_size_limited(authed_client, conversation, enqueued):
@@ -120,16 +120,16 @@ async def test_get_run(authed_client, db, user, conversation):
     assert body["status"] == "running" and body["id"] == str(run.id)
 
 
-async def test_cancel_sets_the_flag_only_for_active_runs(authed_client, db, user, conversation, fake_async_redis):
+async def test_cancel_sets_the_flag_only_for_active_runs(authed_client, db, user, conversation, async_redis_db):
     active = Run(conversation_id=conversation.id, user_id=user.id, status="running")
     finished = Run(conversation_id=conversation.id, user_id=user.id, status="succeeded")
     db.add_all([active, finished])
     db.flush()
 
     assert (await authed_client.post(f"/api/v1/runs/{active.id}/cancel", headers=CSRF)).status_code == 202
-    assert await fake_async_redis.exists(cancel_key(active.id))
+    assert await async_redis_db.exists(cancel_key(active.id))
     assert (await authed_client.post(f"/api/v1/runs/{finished.id}/cancel", headers=CSRF)).status_code == 202
-    assert not await fake_async_redis.exists(cancel_key(finished.id))
+    assert not await async_redis_db.exists(cancel_key(finished.id))
 
 
 async def test_cancel_needs_the_csrf_header(authed_client, db, user, conversation):
@@ -157,13 +157,13 @@ def parse_sse(text: str) -> list[dict]:
 
 
 @pytest.fixture
-async def streamed_run(db, user, conversation, fake_async_redis):
+async def streamed_run(db, user, conversation, async_redis_db):
     run = Run(conversation_id=conversation.id, user_id=user.id, status="succeeded")
     db.add(run)
     db.flush()
     ids = []
     for kind, data in [("run_started", {"run_id": str(run.id)}), ("token", {"text": "Hi"}), ("done", {"status": "succeeded"})]:
-        ids.append(await events.publish(fake_async_redis, run.id, kind, data))
+        ids.append(await events.publish(async_redis_db, run.id, kind, data))
     return run, ids
 
 
@@ -211,12 +211,12 @@ async def test_stale_active_run_does_not_block_the_conversation(authed_client, d
     assert (await post_run(authed_client, conversation.id)).status_code == 202
 
 
-async def test_stream_closes_when_the_run_ended_without_a_done_event(authed_client, db, user, conversation, fake_async_redis, monkeypatch):
+async def test_stream_closes_when_the_run_ended_without_a_done_event(authed_client, db, user, conversation, async_redis_db, monkeypatch):
     monkeypatch.setattr(events, "BLOCK_MS", 50)
     run = Run(conversation_id=conversation.id, user_id=user.id, status="failed")
     db.add(run)
     db.flush()
-    await events.publish(fake_async_redis, run.id, "run_started", {})  # the worker died before `done`
+    await events.publish(async_redis_db, run.id, "run_started", {})  # the worker died before `done`
     response = await authed_client.get(f"/api/v1/runs/{run.id}/events?from=0")
     sse = parse_sse(response.text)
     assert [e["event"] for e in sse] == ["run_started", "done"]

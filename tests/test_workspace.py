@@ -104,9 +104,9 @@ def provider():
 
 
 @pytest.fixture
-def manager(fake_async_redis, provider):
+def manager(async_redis_db, provider):
     return SandboxManager(
-        provider, SandboxSlots(fake_async_redis, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=1, sleep=no_sleep
+        provider, SandboxSlots(async_redis_db, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=1, sleep=no_sleep
     )
 
 
@@ -202,7 +202,7 @@ async def test_run_python_creates_sandbox_and_reuses_it(workspace, provider, con
 
 
 async def test_hydrates_only_attached_ready_datasets_of_the_owner(
-    workspace, provider, conversation, user, make_user, add_dataset, events, fake_async_redis
+    workspace, provider, conversation, user, make_user, add_dataset, events, async_redis_db
 ):
     sales = add_dataset(user, "sales.csv", b"sales", attach_to=conversation)
     add_dataset(user, "pending.csv", status="pending", attach_to=conversation)
@@ -214,14 +214,14 @@ async def test_hydrates_only_attached_ready_datasets_of_the_owner(
     sandbox = provider.created[0]
     assert {k: v for k, v in sandbox.files.items() if k.startswith("data/")} == {"data/sales.csv": b"sales"}
     assert ("status", {"message": "Loading 1 dataset(s) into the sandbox…"}) in events
-    assert await fake_async_redis.hgetall(datasets_key("sbx-1")) == {str(sales.id): "data/sales.csv"}
+    assert await async_redis_db.hgetall(datasets_key("sbx-1")) == {str(sales.id): "data/sales.csv"}
 
     await workspace.run_python("pass")
     assert sent_datasets(sandbox) == ["data/sales.csv"]  # files persist: not sent again
 
 
 async def test_newly_attached_dataset_is_sent_and_detached_one_removed(
-    workspace, provider, conversation, user, add_dataset, db, fake_async_redis
+    workspace, provider, conversation, user, add_dataset, db, async_redis_db
 ):
     first = add_dataset(user, "first.csv", b"1", attach_to=conversation)
     await workspace.run_python("pass")
@@ -234,7 +234,7 @@ async def test_newly_attached_dataset_is_sent_and_detached_one_removed(
     sandbox = provider.created[0]
     assert {k for k in sandbox.files if k.startswith("data/")} == {"data/second.csv"}
     assert sent_datasets(sandbox) == ["data/first.csv", "data/second.csv"]
-    assert await fake_async_redis.hgetall(datasets_key("sbx-1")) == {str(second.id): "data/second.csv"}
+    assert await async_redis_db.hgetall(datasets_key("sbx-1")) == {str(second.id): "data/second.csv"}
 
 
 async def test_a_path_freed_by_detach_is_not_removed_when_reused(
@@ -265,14 +265,14 @@ async def test_large_datasets_are_sent_in_batches(workspace, provider, conversat
 
 
 async def test_expired_sandbox_is_rehydrated_and_the_agent_told(
-    workspace, provider, conversation, user, add_dataset, db, fake_async_redis
+    workspace, provider, conversation, user, add_dataset, db, async_redis_db
 ):
     add_dataset(user, "sales.csv", b"sales", attach_to=conversation)
     first = await workspace.run_python("x = 1")
     assert RESET_NOTE not in first.output  # a brand-new sandbox isn't a reset
 
     provider.expire("sbx-1")
-    await fake_async_redis.zadd(LEASES_KEY, {"sbx-1": time.time() - 1})
+    await async_redis_db.zadd(LEASES_KEY, {"sbx-1": time.time() - 1})
     result = await workspace.run_python("print(x)")
 
     assert result.output.startswith(RESET_NOTE)
@@ -452,7 +452,7 @@ async def test_nonzero_exit_without_stderr_is_still_an_error(workspace, provider
     assert result.is_error and "error: exit status 101" in result.output
 
 
-async def test_capacity_busy_is_reported_to_the_agent(workspace, manager, fake_async_redis):
+async def test_capacity_busy_is_reported_to_the_agent(workspace, manager, async_redis_db):
     manager.slots._capacity = 0
     manager._busy_wait_s = 0
     result = await workspace.run_python("1")
@@ -461,7 +461,7 @@ async def test_capacity_busy_is_reported_to_the_agent(workspace, manager, fake_a
 
 @pytest.mark.parametrize("problem", ["missing", "oversize"])
 async def test_unreadable_dataset_is_skipped_noted_and_retried(
-    workspace, provider, conversation, user, add_dataset, storage, monkeypatch, fake_async_redis, problem
+    workspace, provider, conversation, user, add_dataset, storage, monkeypatch, async_redis_db, problem
 ):
     good = add_dataset(user, "good.csv", b"good", attach_to=conversation)
     bad = add_dataset(user, "bad.csv", b"bad-data", attach_to=conversation)
@@ -477,7 +477,7 @@ async def test_unreadable_dataset_is_skipped_noted_and_retried(
     assert "Note: dataset data/bad.csv could not be loaded into the sandbox" in result.output
     sandbox = provider.created[0]
     assert sent_datasets(sandbox) == ["data/good.csv"]
-    assert await fake_async_redis.hgetall(datasets_key("sbx-1")) == {str(good.id): "data/good.csv"}
+    assert await async_redis_db.hgetall(datasets_key("sbx-1")) == {str(good.id): "data/good.csv"}
 
     storage.objects[bad.gcs_key] = original
     monkeypatch.setattr("app.agent.workspace.MAX_UPLOAD_BYTES", 1024)
@@ -535,7 +535,7 @@ async def test_artifact_upload_failure_is_reported_not_raised(workspace, provide
 
 
 async def test_dataset_upload_timeout_is_a_dataset_note_not_a_code_timeout(
-    workspace, provider, conversation, user, add_dataset, manager, fake_async_redis
+    workspace, provider, conversation, user, add_dataset, manager, async_redis_db
 ):
     add_dataset(user, "big.csv", b"big", attach_to=conversation)
     deadlines = []
@@ -551,7 +551,7 @@ async def test_dataset_upload_timeout_is_a_dataset_note_not_a_code_timeout(
     assert not result.is_error and "ran: analyse()" in result.output
     assert "exceeded" not in result.output
     assert "Note: dataset data/big.csv could not be loaded into the sandbox (upload timed out)" in result.output
-    assert await fake_async_redis.hgetall(datasets_key("sbx-1")) == {}  # retried next call
+    assert await async_redis_db.hgetall(datasets_key("sbx-1")) == {}  # retried next call
 
 
 async def test_failing_housekeeping_is_reported_as_unavailable(workspace, provider, conversation, user, add_dataset):

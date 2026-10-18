@@ -24,7 +24,7 @@ pytestmark = [
 
 
 async def test_delete_removes_real_artifact_object_and_real_sandbox(
-    client, db, fake_async_redis, make_user, login_as, monkeypatch
+    client, db, async_redis_db, make_user, login_as, monkeypatch
 ):
     try:
         storage = get_storage()
@@ -54,7 +54,7 @@ async def test_delete_removes_real_artifact_object_and_real_sandbox(
         user_id=user.id,
         conversation_id=conversation.id,
         run_id=run.id,
-        manager=SandboxManager(provider, SandboxSlots(fake_async_redis, 5)),
+        manager=SandboxManager(provider, SandboxSlots(async_redis_db, 5)),
         storage=storage,
         session_factory=_Session,
     )

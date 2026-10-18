@@ -21,7 +21,7 @@ def _fake_decode(token: str) -> dict:
 
 
 @pytest.fixture
-def expired_session(fake_redis, monkeypatch) -> str:
+def expired_session(redis_db, monkeypatch) -> str:
     monkeypatch.setattr(security, "_decode_access_token", _fake_decode)
     return create_session({"access_token": OLD_TOKEN, "refresh_token": "rt-1", "claims": {}})
 
@@ -120,9 +120,9 @@ async def test_rejected_refresh_token_is_401_and_releases_lock(client, expired_s
     assert not security.refresh_lock_held(expired_session)
 
 
-def test_release_does_not_delete_a_lock_owned_by_someone_else(fake_redis):
+def test_release_does_not_delete_a_lock_owned_by_someone_else(redis_db):
     mine = acquire_refresh_lock("sid")
-    fake_redis.delete("session:sid:refresh_lock")  # simulate expiry
+    redis_db.delete("session:sid:refresh_lock")  # simulate expiry
     theirs = acquire_refresh_lock("sid")
 
     release_refresh_lock("sid", mine)

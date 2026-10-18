@@ -1,4 +1,4 @@
-"""WP4 acceptance for the worker side: execute_run() with a scripted chat model, the fake sandbox, fakeredis
+"""WP4 acceptance for the worker side: execute_run() with a scripted chat model, the fake sandbox, real Redis
 event streams and the real Postgres checkpointer (in a throwaway schema)."""
 
 import asyncio
@@ -35,7 +35,7 @@ async def persistence(fresh_schema):
 
 
 @pytest.fixture
-def make_deps(db, persistence, fake_redis, fake_async_redis):
+def make_deps(db, persistence, redis_db, async_redis_db):
     """Builds RunDeps around a scripted model; `responder` decides what the "LLM" says."""
 
     @contextmanager
@@ -43,7 +43,7 @@ def make_deps(db, persistence, fake_redis, fake_async_redis):
         yield db
 
     manager = SandboxManager(
-        FakeSandboxProvider(), SandboxSlots(fake_async_redis, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=5,
+        FakeSandboxProvider(), SandboxSlots(async_redis_db, 5), ttl_s=3600, idle_timeout_s=300, exec_timeout_s=5,
         sleep=no_sleep,
     )
 
@@ -53,8 +53,8 @@ def make_deps(db, persistence, fake_redis, fake_async_redis):
             persistence=persistence,
             manager=manager,
             storage=FakeStorage(),
-            events_client=fake_async_redis,
-            guard_client=fake_redis,
+            events_client=async_redis_db,
+            guard_client=redis_db,
             session_factory=session_factory,
             model_factory=lambda _model_id: model,
             cancel_poll_s=0.02,
@@ -68,7 +68,7 @@ def make_deps(db, persistence, fake_redis, fake_async_redis):
 
 
 @pytest.fixture
-def new_run(db, user, fake_redis):
+def new_run(db, user, redis_db):
     """A queued run with its user message and guards, as the API leaves it."""
 
     def _new(text="how many rows?") -> Run:
@@ -80,7 +80,7 @@ def new_run(db, user, fake_redis):
         db.flush()
         add_user_message(db, conversation.id, run.id, text)
         db.commit()
-        assert run_guard.acquire(fake_redis, user.id, conversation.id, run.id) is run_guard.Admission.OK
+        assert run_guard.acquire(redis_db, user.id, conversation.id, run.id) is run_guard.Admission.OK
         return run
 
     return _new
@@ -122,12 +122,12 @@ def assistant_messages(db, run):
 # --- happy path -----------------------------------------------------------------------------------------
 
 
-async def test_run_streams_events_and_finalizes(db, make_deps, new_run, fake_redis, fake_async_redis):
+async def test_run_streams_events_and_finalizes(db, make_deps, new_run, redis_db, async_redis_db):
     run = new_run()
     deps = make_deps(code_then_answer)
     await execute_run(deps, run.id)
 
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     kinds = types(evts)
     assert kinds[0] == "run_started" and kinds[-1] == "done"
     assert kinds.index("tool_call") < kinds.index("tool_result") < kinds.index("token", kinds.index("tool_result"))
@@ -136,21 +136,21 @@ async def test_run_streams_events_and_finalizes(db, make_deps, new_run, fake_red
     result = next(d for t, d in evts if t == "tool_result")
     assert result["tool_call_id"] == "call-1" and "error" not in result
     assert evts[-1][1] == {"status": "succeeded"}
-    assert await fake_async_redis.ttl(events.stream_key(run.id)) > 0  # expiry clock started
+    assert await async_redis_db.ttl(events.stream_key(run.id)) > 0  # expiry clock started
 
     run = reload(db, run)
     assert run.status == "succeeded" and run.started_at and run.finished_at and run.error is None
     (reply,) = assistant_messages(db, run)
     assert "Done. Tool said" in reply.content["text"] and reply.content["tools"] == [{"name": "run_python", "ok": True}]
     # The slot and the conversation lock are free again.
-    assert run_guard.acquire(fake_redis, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
+    assert run_guard.acquire(redis_db, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
 
 
-async def test_summarizer_tokens_are_not_relayed(make_deps, new_run, fake_async_redis):
+async def test_summarizer_tokens_are_not_relayed(make_deps, new_run, async_redis_db):
     run = new_run()
     deps = make_deps(lambda messages: AIMessage("hello"))
     await execute_run(deps, run.id)
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert [d["text"] for t, d in evts if t == "token"] == ["hello"]
 
 
@@ -171,35 +171,35 @@ async def wait_for_event(client, run_id, kind, timeout=5.0):
             await asyncio.sleep(0.01)
 
 
-async def test_cancel_mid_stream(db, make_deps, new_run, fake_async_redis):
+async def test_cancel_mid_stream(db, make_deps, new_run, async_redis_db):
     run = new_run()
     gate = threading.Event()
     deps = make_deps(blocking_responder(gate))
     task = asyncio.create_task(execute_run(deps, run.id))
     try:
-        await wait_for_event(fake_async_redis, run.id, "run_started")
-        await fake_async_redis.set(cancel_key(run.id), "1")
+        await wait_for_event(async_redis_db, run.id, "run_started")
+        await async_redis_db.set(cancel_key(run.id), "1")
         async with asyncio.timeout(2):  # cancel must not wait for the blocked LLM call
             await task
     finally:
         gate.set()
 
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert evts[-1] == ("done", {"status": "cancelled"})
     assert reload(db, run).status == "cancelled"
 
 
-async def test_cancel_while_queued_never_calls_the_model(db, make_deps, new_run, fake_async_redis):
+async def test_cancel_while_queued_never_calls_the_model(db, make_deps, new_run, async_redis_db):
     run = new_run()
-    await fake_async_redis.set(cancel_key(run.id), "1")
+    await async_redis_db.set(cancel_key(run.id), "1")
     deps = make_deps(code_then_answer)
     await execute_run(deps, run.id)
     assert deps.model.calls == []
-    assert types(await stream_events(fake_async_redis, run.id)) == ["done"]
+    assert types(await stream_events(async_redis_db, run.id)) == ["done"]
     assert reload(db, run).status == "cancelled"
 
 
-async def test_deadline_fails_the_run(db, make_deps, new_run, fake_async_redis):
+async def test_deadline_fails_the_run(db, make_deps, new_run, async_redis_db):
     run = new_run()
     gate = threading.Event()
     deps = make_deps(blocking_responder(gate), run_time_limit_s=0.2)
@@ -207,30 +207,30 @@ async def test_deadline_fails_the_run(db, make_deps, new_run, fake_async_redis):
         await execute_run(deps, run.id)
     finally:
         gate.set()
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert evts[-2][0] == "error" and evts[-2][1]["code"] == "timeout"
     assert evts[-1] == ("done", {"status": "failed"})
     assert reload(db, run).status == "failed"
 
 
-async def test_model_error_fails_with_a_generic_message(db, make_deps, new_run, fake_async_redis):
+async def test_model_error_fails_with_a_generic_message(db, make_deps, new_run, async_redis_db):
     def boom(messages):
         raise RuntimeError("secret-api-key-in-message")
 
     run = new_run()
     await execute_run(make_deps(boom), run.id)
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert evts[-2] == ("error", {"message": "The run failed unexpectedly", "code": "internal"})
     assert "secret" not in repr(evts) and "secret" not in (reload(db, run).error or "")
 
 
-async def test_unavailable_model_fails_the_run(db, make_deps, new_run, fake_async_redis):
+async def test_unavailable_model_fails_the_run(db, make_deps, new_run, async_redis_db):
     def no_model(_model_id):
         raise UnknownModelError("nope")
 
     run = new_run()
     await execute_run(make_deps(code_then_answer, model_factory=no_model), run.id)
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert evts[-2][1]["code"] == "model_unavailable"
     assert reload(db, run).status == "failed"
 
@@ -238,7 +238,7 @@ async def test_unavailable_model_fails_the_run(db, make_deps, new_run, fake_asyn
 # --- redelivery -----------------------------------------------------------------------------------------
 
 
-async def test_redelivered_run_resumes_from_the_checkpoint(db, make_deps, new_run, fake_redis, fake_async_redis, persistence):
+async def test_redelivered_run_resumes_from_the_checkpoint(db, make_deps, new_run, redis_db, async_redis_db, persistence):
     run = new_run()
     gate = threading.Event()
 
@@ -249,7 +249,7 @@ async def test_redelivered_run_resumes_from_the_checkpoint(db, make_deps, new_ru
 
     deps = make_deps(respond)
     first = asyncio.create_task(execute_run(deps, run.id))
-    await wait_for_event(fake_async_redis, run.id, "tool_result")
+    await wait_for_event(async_redis_db, run.id, "tool_result")
     first.cancel()  # worker shutdown mid-run
     with pytest.raises(asyncio.CancelledError):
         await first
@@ -257,12 +257,12 @@ async def test_redelivered_run_resumes_from_the_checkpoint(db, make_deps, new_ru
 
     # Not finalized: still running, guards held, no `done`.
     assert reload(db, run).status == "running"
-    assert "done" not in types(await stream_events(fake_async_redis, run.id))
-    assert run_guard.acquire(fake_redis, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.CONVERSATION_BUSY
+    assert "done" not in types(await stream_events(async_redis_db, run.id))
+    assert run_guard.acquire(redis_db, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.CONVERSATION_BUSY
 
     await execute_run(deps, run.id)  # the broker redelivers
 
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     kinds = types(evts)
     assert kinds.count("run_started") == 1 and "run_resumed" in kinds and kinds[-1] == "done"
     assert next(d for t, d in evts if t == "run_resumed")["reason"] == "redelivery"
@@ -283,17 +283,17 @@ async def runner_state(deps, run):
     return snapshot.values["messages"]
 
 
-async def test_finished_run_is_not_rerun_and_gets_its_done_event(db, make_deps, new_run, fake_redis, fake_async_redis):
+async def test_finished_run_is_not_rerun_and_gets_its_done_event(db, make_deps, new_run, redis_db, async_redis_db):
     run = new_run()
     deps = make_deps(code_then_answer)
     await execute_run(deps, run.id)
-    await fake_async_redis.delete(events.stream_key(run.id))  # a delivery that died before publishing `done`
+    await async_redis_db.delete(events.stream_key(run.id))  # a delivery that died before publishing `done`
     calls = len(deps.model.calls)
 
     await execute_run(deps, run.id)
 
     assert len(deps.model.calls) == calls
-    assert types(await stream_events(fake_async_redis, run.id)) == ["done"]
+    assert types(await stream_events(async_redis_db, run.id)) == ["done"]
     assert len(assistant_messages(db, run)) == 1
 
 
@@ -309,15 +309,15 @@ async def test_finalizing_twice_saves_one_reply(db, make_deps, new_run):
 # --- failure paths: no stuck runs ------------------------------------------------------------------------
 
 
-async def assert_failed_cleanly(db, run, fake_redis, fake_async_redis, code="internal"):
-    evts = await stream_events(fake_async_redis, run.id)
+async def assert_failed_cleanly(db, run, redis_db, async_redis_db, code="internal"):
+    evts = await stream_events(async_redis_db, run.id)
     assert evts[-2][0] == "error" and evts[-2][1]["code"] == code
     assert evts[-1] == ("done", {"status": "failed"})
     assert reload(db, run).status == "failed"
-    assert run_guard.acquire(fake_redis, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
+    assert run_guard.acquire(redis_db, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
 
 
-async def test_setup_failure_fails_the_run_instead_of_stranding_it(db, make_deps, new_run, fake_redis, fake_async_redis, monkeypatch):
+async def test_setup_failure_fails_the_run_instead_of_stranding_it(db, make_deps, new_run, redis_db, async_redis_db, monkeypatch):
     run = new_run()
     real = runner._mark_running
     calls = []
@@ -330,10 +330,10 @@ async def test_setup_failure_fails_the_run_instead_of_stranding_it(db, make_deps
 
     monkeypatch.setattr(runner, "_mark_running", flaky)
     await execute_run(make_deps(code_then_answer), run.id)
-    await assert_failed_cleanly(db, run, fake_redis, fake_async_redis)
+    await assert_failed_cleanly(db, run, redis_db, async_redis_db)
 
 
-async def test_finalize_failure_fails_the_run(db, make_deps, new_run, fake_redis, fake_async_redis, monkeypatch):
+async def test_finalize_failure_fails_the_run(db, make_deps, new_run, redis_db, async_redis_db, monkeypatch):
     run = new_run()
     real = runner._finalize_db
     calls = []
@@ -347,10 +347,10 @@ async def test_finalize_failure_fails_the_run(db, make_deps, new_run, fake_redis
     monkeypatch.setattr(runner, "_finalize_db", flaky)
     await execute_run(make_deps(code_then_answer), run.id)
     assert calls == ["succeeded", "failed"]
-    await assert_failed_cleanly(db, run, fake_redis, fake_async_redis)
+    await assert_failed_cleanly(db, run, redis_db, async_redis_db)
 
 
-async def test_unrecoverable_failure_still_releases_the_guards(db, make_deps, new_run, fake_redis, monkeypatch):
+async def test_unrecoverable_failure_still_releases_the_guards(db, make_deps, new_run, redis_db, monkeypatch):
     run = new_run()
 
     def down(*args, **kwargs):
@@ -360,10 +360,10 @@ async def test_unrecoverable_failure_still_releases_the_guards(db, make_deps, ne
     monkeypatch.setattr(runner, "_finalize_db", down)
     with pytest.raises(RuntimeError):
         await execute_run(make_deps(code_then_answer), run.id)
-    assert run_guard.acquire(fake_redis, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
+    assert run_guard.acquire(redis_db, run.user_id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
 
 
-async def test_final_events_are_retried(db, make_deps, new_run, fake_async_redis, monkeypatch):
+async def test_final_events_are_retried(db, make_deps, new_run, async_redis_db, monkeypatch):
     run = new_run()
     real = events.publish
     failed = []
@@ -376,7 +376,7 @@ async def test_final_events_are_retried(db, make_deps, new_run, fake_async_redis
 
     monkeypatch.setattr(events, "publish", flaky)
     await execute_run(make_deps(code_then_answer), run.id)
-    assert failed and types(await stream_events(fake_async_redis, run.id))[-1] == "done"
+    assert failed and types(await stream_events(async_redis_db, run.id))[-1] == "done"
     assert reload(db, run).status == "succeeded"
 
 
@@ -396,10 +396,10 @@ class FlakyExists:
         return await self._inner.exists(*keys)
 
 
-async def test_redis_blip_in_the_cancel_watcher_is_not_a_cancel(db, make_deps, new_run, fake_async_redis):
+async def test_redis_blip_in_the_cancel_watcher_is_not_a_cancel(db, make_deps, new_run, async_redis_db):
     run = new_run()
     # Call 1 is the start-up check; the watcher's first polls fail.
-    client = FlakyExists(fake_async_redis, failing_calls={2, 3, 4})
+    client = FlakyExists(async_redis_db, failing_calls={2, 3, 4})
     await execute_run(make_deps(code_then_answer, events_client=client), run.id)
     assert client.calls >= 4
     assert reload(db, run).status == "succeeded"
@@ -455,20 +455,20 @@ async def test_next_run_after_a_run_died_mid_tool_is_well_formed(db, make_deps, 
 # --- event stream size ------------------------------------------------------------------------------------
 
 
-async def test_token_deltas_are_coalesced_in_order(fake_async_redis):
+async def test_token_deltas_are_coalesced_in_order(async_redis_db):
     run_id = uuid.uuid4()
-    deps = RunDeps(None, None, None, fake_async_redis, None, None)
+    deps = RunDeps(None, None, None, async_redis_db, None, None)
     buffer = runner._TokenBuffer(deps, run_id)
     deltas = [f"w{i} " for i in range(400)]
     for delta in deltas:
         await buffer.add(delta)
     await buffer.flush()
-    evts = await stream_events(fake_async_redis, run_id)
+    evts = await stream_events(async_redis_db, run_id)
     assert "".join(d["text"] for _, d in evts) == "".join(deltas)
     assert len(evts) < len(deltas) / 5
 
 
-async def test_stream_gets_a_safety_expiry_on_every_publish(fake_async_redis):
+async def test_stream_gets_a_safety_expiry_on_every_publish(async_redis_db):
     run_id = uuid.uuid4()
-    await events.publish(fake_async_redis, run_id, "run_started", {})
-    assert await fake_async_redis.ttl(events.stream_key(run_id)) > events.STREAM_TTL_S
+    await events.publish(async_redis_db, run_id, "run_started", {})
+    assert await async_redis_db.ttl(events.stream_key(run_id)) > events.STREAM_TTL_S

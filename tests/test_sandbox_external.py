@@ -67,7 +67,7 @@ async def provider():
 
 
 @pytest.fixture
-async def workspace_factory(db, user, fake_async_redis, provider):
+async def workspace_factory(db, user, async_redis_db, provider):
     storage = FakeStorage()
     conversation = Conversation(user_id=user.id, model="anthropic:claude-sonnet-5-5")
     db.add(conversation)
@@ -92,7 +92,7 @@ async def workspace_factory(db, user, fake_async_redis, provider):
         yield db
 
     def make(**settings) -> ConversationWorkspace:
-        manager = SandboxManager(provider, SandboxSlots(fake_async_redis, 5), **settings)
+        manager = SandboxManager(provider, SandboxSlots(async_redis_db, 5), **settings)
         return ConversationWorkspace(
             user_id=user.id,
             conversation_id=conversation.id,

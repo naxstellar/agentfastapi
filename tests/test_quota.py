@@ -26,8 +26,8 @@ CSRF = {"X-Requested-With": "fetch"}
 
 
 @pytest.fixture
-def q(db, fake_redis) -> Quota:
-    return Quota(fake_redis, lambda: nullcontext(db))
+def q(db, redis_db) -> Quota:
+    return Quota(redis_db, lambda: nullcontext(db))
 
 
 def daily(db, user) -> tuple[int, int] | None:
@@ -57,11 +57,11 @@ def test_add_usage_counts_per_run_and_per_day(q, user):
     assert q.status(user.id).used == 36
 
 
-def test_cold_counter_is_warmed_from_postgres(q, db, user, fake_redis):
+def test_cold_counter_is_warmed_from_postgres(q, db, user, redis_db):
     db.add(TokenUsageDaily(user_id=user.id, day=quota.today(), input_tokens=700, output_tokens=300))
     db.flush()
     assert q.status(user.id).used == 1000
-    fake_redis.flushall()  # Redis flush: the record in Postgres is the fallback
+    redis_db.flushdb()  # Redis flush: the record in Postgres is the fallback
     assert q.add_usage(user.id, uuid.uuid4(), 1, 1)[2] == 1002
 
 
@@ -116,12 +116,12 @@ def with_usage(responder, per_call=(100, 20)):
     return respond
 
 
-async def test_run_meters_tokens_and_rolls_them_up(db, user, make_deps, new_run, fake_async_redis, monkeypatch):
+async def test_run_meters_tokens_and_rolls_them_up(db, user, make_deps, new_run, async_redis_db, monkeypatch):
     monkeypatch.setattr(quota, "DAILY_TOKEN_BUDGET", 1)  # exhausted from the first call; the run still finishes
     run = new_run()
     await execute_run(make_deps(with_usage(code_then_answer)), run.id)  # two model calls
 
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     usage = [d for t, d in evts if t == "usage"]
     assert usage == [
         {"input_tokens": 100, "output_tokens": 20, "day_used": 120, "day_limit": 1},
@@ -147,7 +147,7 @@ async def test_failed_run_still_records_its_tokens(db, user, make_deps, new_run)
     assert daily(db, user) == (run.input_tokens, 5)
 
 
-async def test_summarizer_calls_are_counted(persistence, q, user, fake_async_redis, monkeypatch):
+async def test_summarizer_calls_are_counted(persistence, q, user, async_redis_db, monkeypatch):
     monkeypatch.setattr(graph_module, "SUMMARIZE_TRIGGER_TOKENS", 6000)
     monkeypatch.setattr(graph_module, "SUMMARIZE_KEEP_MESSAGES", 6)
 
@@ -161,7 +161,7 @@ async def test_summarizer_calls_are_counted(persistence, q, user, fake_async_red
         return reply
 
     run_id = uuid.uuid4()
-    callback = UsageCallback(q, fake_async_redis, user.id, run_id, 10**9)
+    callback = UsageCallback(q, async_redis_db, user.id, run_id, 10**9)
     agent = build_agent(ScriptedChatModel(responder=respond), checkpointer=persistence.checkpointer, store=persistence.store)
     history = chat_history(16, 800)  # past the trigger, so the middleware summarizes before the model call
     await agent.ainvoke(
@@ -179,13 +179,13 @@ class HangingStreamModel(ScriptedChatModel):
         await asyncio.sleep(60)
 
 
-async def test_cancelled_call_is_charged_an_estimate(db, user, make_deps, new_run, fake_async_redis):
+async def test_cancelled_call_is_charged_an_estimate(db, user, make_deps, new_run, async_redis_db):
     run = new_run("x" * 400)  # ~100 prompt tokens
     model = HangingStreamModel(responder=lambda m: AIMessage(""))
     deps = make_deps(code_then_answer, model_factory=lambda _model_id: model)
     task = asyncio.create_task(execute_run(deps, run.id))
-    await wait_for_event(fake_async_redis, run.id, "token")  # the call is streaming
-    await fake_async_redis.set(cancel_key(run.id), "1")
+    await wait_for_event(async_redis_db, run.id, "token")  # the call is streaming
+    await async_redis_db.set(cancel_key(run.id), "1")
     async with asyncio.timeout(2):
         await task
     run = reload(db, run)
@@ -194,9 +194,9 @@ async def test_cancelled_call_is_charged_an_estimate(db, user, make_deps, new_ru
     assert daily(db, user) == (run.input_tokens, 20)
 
 
-async def test_errored_call_counts_partial_output(q, user, fake_async_redis):
+async def test_errored_call_counts_partial_output(q, user, async_redis_db):
     run_id, call_id = uuid.uuid4(), uuid.uuid4()
-    callback = UsageCallback(q, fake_async_redis, user.id, run_id, 10**9)
+    callback = UsageCallback(q, async_redis_db, user.id, run_id, 10**9)
     await callback.on_chat_model_start({}, [[HumanMessage("y" * 40)]], run_id=call_id)
     await callback.on_llm_new_token("z" * 20, run_id=call_id)
     await callback.on_llm_error(RuntimeError("stream died"), run_id=call_id)
@@ -210,8 +210,8 @@ async def test_errored_call_counts_partial_output(q, user, fake_async_redis):
 
 
 @pytest.fixture(autouse=True)
-def api_events(monkeypatch, fake_async_redis):
-    monkeypatch.setattr(events, "api_events_client", lambda: fake_async_redis)
+def api_events(monkeypatch, async_redis_db):
+    monkeypatch.setattr(events, "api_events_client", lambda: async_redis_db)
 
 
 @pytest.fixture

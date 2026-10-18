@@ -296,7 +296,7 @@ class SandboxSlots:
     plus a sorted set of last activity for idle reaping.
 
     Leases expire with their sandbox, so an expired sandbox frees its slot without any callback.
-    WATCH/MULTI instead of Lua so fakeredis can run it.
+    WATCH/MULTI instead of Lua.
     """
 
     def __init__(self, client: redis.asyncio.Redis, capacity: int):

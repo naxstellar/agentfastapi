@@ -100,7 +100,7 @@ def test_dataset_deleted_while_processing_is_not_resurrected(db, storage, make_d
     assert db.get(Dataset, dataset_id) is None
 
 
-def test_enqueue_is_deduplicated_until_the_task_finishes(fake_redis, monkeypatch):
+def test_enqueue_is_deduplicated_until_the_task_finishes(redis_db, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(worker.process_dataset, "delay", sent.append)
     dataset_id = uuid.uuid4()
@@ -111,7 +111,7 @@ def test_enqueue_is_deduplicated_until_the_task_finishes(fake_redis, monkeypatch
     assert sent == [str(dataset_id)]
 
 
-def test_failed_enqueue_releases_the_dedupe_slot(fake_redis, monkeypatch):
+def test_failed_enqueue_releases_the_dedupe_slot(redis_db, monkeypatch):
     def broker_down(_):
         raise ConnectionError("broker down")
 

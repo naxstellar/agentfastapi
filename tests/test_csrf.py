@@ -46,7 +46,7 @@ async def test_get_does_not_need_header(authed_client):
     assert response.status_code == 200
 
 
-async def test_unauthenticated_post_without_header_is_rejected_by_csrf(fake_redis):
+async def test_unauthenticated_post_without_header_is_rejected_by_csrf(redis_db):
     async with make_client(_probe_app(None)) as c:
         response = await c.post("/api/v1/probe")
     assert response.status_code == 403

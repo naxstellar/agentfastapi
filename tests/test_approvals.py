@@ -27,8 +27,8 @@ CSRF = {"X-Requested-With": "fetch"}
 
 
 @pytest.fixture(autouse=True)
-def api_events(monkeypatch, fake_async_redis):
-    monkeypatch.setattr(events, "api_events_client", lambda: fake_async_redis)
+def api_events(monkeypatch, async_redis_db):
+    monkeypatch.setattr(events, "api_events_client", lambda: async_redis_db)
 
 
 @pytest.fixture
@@ -58,9 +58,9 @@ async def pause(deps, run):
     await execute_run(deps, run.id)
 
 
-async def answer(db, fake_redis, deps, run, enqueued, decision):
+async def answer(db, redis_db, deps, run, enqueued, decision):
     """What POST /approve does, then the worker picking the task up."""
-    outcome = approvals.resume_run(db, fake_redis, reload(db, run), decision)
+    outcome = approvals.resume_run(db, redis_db, reload(db, run), decision)
     assert outcome is approvals.Resume.RESUMED
     kwargs = enqueued[-1]
     sent = kwargs["args"][1]
@@ -69,113 +69,113 @@ async def answer(db, fake_redis, deps, run, enqueued, decision):
     await execute_run(deps, run.id, sent)
 
 
-async def test_run_pauses_for_approval_and_releases_its_slots(db, user, approvals_on, make_deps, new_run, fake_redis, fake_async_redis):
+async def test_run_pauses_for_approval_and_releases_its_slots(db, user, approvals_on, make_deps, new_run, redis_db, async_redis_db):
     run = new_run()
     await pause(make_deps(adapting), run)
 
     run = reload(db, run)
     assert run.status == "awaiting_approval"
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert "done" not in types(evts)
     assert [d for t, d in evts if t == "approval_required"] == [{"tool_call_id": "call-1", "code": "print('original')"}]
     assert "tool_call" in types(evts) and "tool_result" not in types(evts)  # nothing ran yet
     # No concurrency slot and no conversation lock are held while waiting.
-    assert run_guard.acquire(fake_redis, user.id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
-    assert fake_redis.zscore(approvals.PENDING_KEY, str(run.id)) is not None
+    assert run_guard.acquire(redis_db, user.id, run.conversation_id, uuid.uuid4()) is run_guard.Admission.OK
+    assert redis_db.zscore(approvals.PENDING_KEY, str(run.id)) is not None
 
 
-async def test_approve_resumes_the_same_run(db, approvals_on, make_deps, new_run, fake_redis, fake_async_redis, enqueued):
+async def test_approve_resumes_the_same_run(db, approvals_on, make_deps, new_run, redis_db, async_redis_db, enqueued):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
-    await answer(db, fake_redis, deps, run, enqueued, {"type": "approve"})
+    await answer(db, redis_db, deps, run, enqueued, {"type": "approve"})
 
     run = reload(db, run)
     assert run.status == "succeeded"
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert [d for t, d in evts if t == "run_resumed"] == [{"run_id": str(run.id), "reason": "approval"}]
     assert types(evts)[-1] == "done"
     assert [d for t, d in evts if t == "tool_result"][0]["output"].endswith("ran: print('original')")
-    assert fake_redis.zscore(approvals.PENDING_KEY, str(run.id)) is None
+    assert redis_db.zscore(approvals.PENDING_KEY, str(run.id)) is None
     message = db.scalars(select(Message).where(Message.conversation_id == run.conversation_id, Message.role == "assistant")).one()
     assert message.content["tools"] == [{"name": "run_python", "ok": True}]  # the pre-pause part is kept
 
 
-async def test_edited_code_is_what_runs(db, approvals_on, make_deps, new_run, fake_redis, fake_async_redis, enqueued):
+async def test_edited_code_is_what_runs(db, approvals_on, make_deps, new_run, redis_db, async_redis_db, enqueued):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
-    await answer(db, fake_redis, deps, run, enqueued, {"type": "edit", "code": "print('edited')", "message": None})
+    await answer(db, redis_db, deps, run, enqueued, {"type": "edit", "code": "print('edited')", "message": None})
 
-    outputs = [d["output"] for t, d in await stream_events(fake_async_redis, run.id) if t == "tool_result"]
+    outputs = [d["output"] for t, d in await stream_events(async_redis_db, run.id) if t == "tool_result"]
     assert outputs and outputs[0].endswith("ran: print('edited')")
     assert reload(db, run).status == "succeeded"
 
 
-async def test_reject_makes_the_agent_adapt(db, approvals_on, make_deps, new_run, fake_redis, fake_async_redis, enqueued):
+async def test_reject_makes_the_agent_adapt(db, approvals_on, make_deps, new_run, redis_db, async_redis_db, enqueued):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
-    await answer(db, fake_redis, deps, run, enqueued, {"type": "reject", "message": "too risky", "code": None})
+    await answer(db, redis_db, deps, run, enqueued, {"type": "reject", "message": "too risky", "code": None})
 
     run = reload(db, run)
     assert run.status == "succeeded"
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     result = [d for t, d in evts if t == "tool_result"][0]
     assert "too risky" in result["output"] and "error" in result  # the sandbox never saw the code
     message = db.scalars(select(Message).where(Message.conversation_id == run.conversation_id, Message.role == "assistant")).one()
     assert "[error]" in message.content["text"] and message.content["tools"] == [{"name": "run_python", "ok": False}]
 
 
-async def test_resume_is_not_quota_gated(db, user, approvals_on, make_deps, new_run, fake_redis, enqueued, monkeypatch):
+async def test_resume_is_not_quota_gated(db, user, approvals_on, make_deps, new_run, redis_db, enqueued, monkeypatch):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
     monkeypatch.setattr(quota, "DAILY_TOKEN_BUDGET", 1)
     deps.quota.add_usage(user.id, uuid.uuid4(), 500, 500)  # budget gone while the run waits
     assert deps.quota.status(user.id).exceeded
-    await answer(db, fake_redis, deps, run, enqueued, {"type": "approve"})
+    await answer(db, redis_db, deps, run, enqueued, {"type": "approve"})
     assert reload(db, run).status == "succeeded"
 
 
 async def test_resume_takes_a_concurrency_slot_and_is_refused_when_the_user_is_at_the_limit(
-    db, user, approvals_on, make_deps, new_run, fake_redis, enqueued, monkeypatch
+    db, user, approvals_on, make_deps, new_run, redis_db, enqueued, monkeypatch
 ):
     monkeypatch.setattr(run_guard, "MAX_CONCURRENT_RUNS", 1)
     run = new_run()
     await pause(make_deps(adapting), run)
     other = new_run()  # takes the user's only slot while the first one waits
-    assert approvals.resume_run(db, fake_redis, reload(db, run), {"type": "approve"}) is approvals.Resume.USER_AT_LIMIT
+    assert approvals.resume_run(db, redis_db, reload(db, run), {"type": "approve"}) is approvals.Resume.USER_AT_LIMIT
     assert reload(db, run).status == "awaiting_approval" and not enqueued
-    run_guard.release(fake_redis, user.id, other.conversation_id, other.id)
-    assert approvals.resume_run(db, fake_redis, reload(db, run), {"type": "approve"}) is approvals.Resume.RESUMED
-    assert approvals.resume_run(db, fake_redis, reload(db, run), {"type": "approve"}) is approvals.Resume.NOT_WAITING  # answered once
+    run_guard.release(redis_db, user.id, other.conversation_id, other.id)
+    assert approvals.resume_run(db, redis_db, reload(db, run), {"type": "approve"}) is approvals.Resume.RESUMED
+    assert approvals.resume_run(db, redis_db, reload(db, run), {"type": "approve"}) is approvals.Resume.NOT_WAITING  # answered once
 
 
-async def test_unanswered_approval_is_rejected_after_the_timeout(db, user, approvals_on, make_deps, new_run, fake_redis, fake_async_redis, enqueued, session_factory):
+async def test_unanswered_approval_is_rejected_after_the_timeout(db, user, approvals_on, make_deps, new_run, redis_db, async_redis_db, enqueued, session_factory):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
 
-    assert approvals.expire_approvals(session_factory, fake_redis) == 0  # not due yet
-    fake_redis.zadd(approvals.PENDING_KEY, {str(run.id): time.time() - 1})
-    assert approvals.expire_approvals(session_factory, fake_redis) == 1
+    assert approvals.expire_approvals(session_factory, redis_db) == 0  # not due yet
+    redis_db.zadd(approvals.PENDING_KEY, {str(run.id): time.time() - 1})
+    assert approvals.expire_approvals(session_factory, redis_db) == 1
     decision = enqueued[-1]["args"][1]
     assert decision["type"] == "reject" and decision["message"] == approvals.TIMEOUT_MESSAGE
     await execute_run(deps, run.id, decision)
     assert reload(db, run).status == "succeeded"
-    assert approvals.TIMEOUT_MESSAGE in [d for t, d in await stream_events(fake_async_redis, run.id) if t == "tool_result"][0]["output"]
+    assert approvals.TIMEOUT_MESSAGE in [d for t, d in await stream_events(async_redis_db, run.id) if t == "tool_result"][0]["output"]
 
 
-async def test_expiry_registers_paused_runs_missing_after_a_redis_flush(db, approvals_on, make_deps, new_run, fake_redis, session_factory):
+async def test_expiry_registers_paused_runs_missing_after_a_redis_flush(db, approvals_on, make_deps, new_run, redis_db, session_factory):
     run = new_run()
     await pause(make_deps(adapting), run)
-    fake_redis.flushall()
-    approvals.expire_approvals(session_factory, fake_redis)
-    assert fake_redis.zscore(approvals.PENDING_KEY, str(run.id)) > time.time()
+    redis_db.flushdb()
+    approvals.expire_approvals(session_factory, redis_db)
+    assert redis_db.zscore(approvals.PENDING_KEY, str(run.id)) > time.time()
 
 
-async def test_cancelling_a_paused_run_finishes_it(db, approvals_on, make_deps, new_run, fake_redis, fake_async_redis, enqueued, authed_client):
+async def test_cancelling_a_paused_run_finishes_it(db, approvals_on, make_deps, new_run, redis_db, async_redis_db, enqueued, authed_client):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
@@ -183,7 +183,7 @@ async def test_cancelling_a_paused_run_finishes_it(db, approvals_on, make_deps, 
     assert response.status_code == 202 and enqueued[-1]["args"] == [str(run.id), None]
     await execute_run(deps, run.id, None)
     assert reload(db, run).status == "cancelled"
-    assert types(await stream_events(fake_async_redis, run.id))[-1] == "done"
+    assert types(await stream_events(async_redis_db, run.id))[-1] == "done"
 
 
 async def test_approvals_off_means_no_pause(db, make_deps, new_run):
@@ -251,7 +251,7 @@ async def test_settings_roundtrip(authed_client, user):
 # --- review fixes -------------------------------------------------------------------------------------------
 
 
-async def test_a_stale_decision_does_not_answer_a_later_pause(db, approvals_on, make_deps, new_run, fake_async_redis):
+async def test_a_stale_decision_does_not_answer_a_later_pause(db, approvals_on, make_deps, new_run, async_redis_db):
     run = new_run()
     deps = make_deps(adapting)
     await pause(deps, run)
@@ -261,7 +261,7 @@ async def test_a_stale_decision_does_not_answer_a_later_pause(db, approvals_on, 
     await execute_run(deps, run.id, {"type": "approve", "interrupt_ids": ["some-earlier-pause"]})
 
     assert reload(db, run).status == "awaiting_approval"  # paused again, nothing was approved on the user's behalf
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     assert "tool_result" not in types(evts)
     assert types(evts).count("approval_required") == 2
     assert [d["reason"] for t, d in evts if t == "run_resumed"] == ["redelivery"]
@@ -299,7 +299,7 @@ async def test_cancelling_a_paused_run_keeps_what_it_did_before_the_pause(db, ap
     assert message.content["text"] == "Let me check the data."
 
 
-async def test_a_failed_cancel_hand_off_leaves_no_cancel_flag(db, approvals_on, make_deps, new_run, fake_async_redis, authed_client, monkeypatch):
+async def test_a_failed_cancel_hand_off_leaves_no_cancel_flag(db, approvals_on, make_deps, new_run, async_redis_db, authed_client, monkeypatch):
     run = new_run()
     await pause(make_deps(adapting), run)
 
@@ -310,4 +310,4 @@ async def test_a_failed_cancel_hand_off_leaves_no_cancel_flag(db, approvals_on, 
     with pytest.raises(RuntimeError):
         await authed_client.post(f"/api/v1/runs/{run.id}/cancel", headers=CSRF)
     assert reload(db, run).status == "awaiting_approval"
-    assert not await fake_async_redis.exists(cancel_key(run.id))
+    assert not await async_redis_db.exists(cancel_key(run.id))

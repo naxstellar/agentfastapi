@@ -44,8 +44,8 @@ def make_manager(redis, provider, capacity=5, **kwargs) -> SandboxManager:
 # --- slots ----------------------------------------------------------------------------------------------
 
 
-async def test_slots_cap_live_sandboxes_and_expired_leases_free_up(fake_async_redis):
-    slots = SandboxSlots(fake_async_redis, capacity=2)
+async def test_slots_cap_live_sandboxes_and_expired_leases_free_up(async_redis_db):
+    slots = SandboxSlots(async_redis_db, capacity=2)
     later = time.time() + 600
     assert await slots.acquire("a", later)
     assert await slots.acquire("b", later)
@@ -55,30 +55,30 @@ async def test_slots_cap_live_sandboxes_and_expired_leases_free_up(fake_async_re
     assert await slots.acquire("c", later)
 
     # A sandbox that reached its TTL frees its slot once its lease runs out, without any callback.
-    await fake_async_redis.zadd(LEASES_KEY, {"b": time.time() - 1})
+    await async_redis_db.zadd(LEASES_KEY, {"b": time.time() - 1})
     assert await slots.acquire("d", later)
-    assert set(await fake_async_redis.zrange(LEASES_KEY, 0, -1)) == {"c", "d"}
+    assert set(await async_redis_db.zrange(LEASES_KEY, 0, -1)) == {"c", "d"}
 
 
-async def test_release_forgets_lease_activity_and_sent_datasets(fake_async_redis):
-    slots = SandboxSlots(fake_async_redis, capacity=2)
+async def test_release_forgets_lease_activity_and_sent_datasets(async_redis_db):
+    slots = SandboxSlots(async_redis_db, capacity=2)
     await slots.acquire("a", time.time() + 600)
     await slots.touch("a", time.time())
-    await fake_async_redis.hset(datasets_key("a"), "d1", "data/x.csv")
+    await async_redis_db.hset(datasets_key("a"), "d1", "data/x.csv")
 
     await slots.release("a")
 
-    assert await fake_async_redis.zcard(LEASES_KEY) == 0
-    assert await fake_async_redis.zcard(LAST_USED_KEY) == 0
-    assert not await fake_async_redis.exists(datasets_key("a"))
+    assert await async_redis_db.zcard(LEASES_KEY) == 0
+    assert await async_redis_db.zcard(LAST_USED_KEY) == 0
+    assert not await async_redis_db.exists(datasets_key("a"))
 
 
 # --- manager --------------------------------------------------------------------------------------------
 
 
-async def test_ensure_creates_then_reuses(fake_async_redis):
+async def test_ensure_creates_then_reuses(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
 
     handle, fresh = await manager.ensure(None, "conversation-1")
     assert fresh and provider.created[0].display_name == "conversation-1"
@@ -89,23 +89,23 @@ async def test_ensure_creates_then_reuses(fake_async_redis):
     assert len(provider.created) == 1
 
 
-async def test_ensure_replaces_expired_sandbox(fake_async_redis):
+async def test_ensure_replaces_expired_sandbox(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     provider.expire(handle.name)
-    await fake_async_redis.zadd(LEASES_KEY, {handle.name: time.time() - 1})
+    await async_redis_db.zadd(LEASES_KEY, {handle.name: time.time() - 1})
 
     replacement, fresh = await manager.ensure(handle.name, "c")
 
     assert fresh and replacement.name != handle.name
-    assert await fake_async_redis.zrange(LEASES_KEY, 0, -1) == [replacement.name]
+    assert await async_redis_db.zrange(LEASES_KEY, 0, -1) == [replacement.name]
 
 
-async def test_ensure_recycles_a_sandbox_about_to_expire(fake_async_redis):
+async def test_ensure_recycles_a_sandbox_about_to_expire(async_redis_db):
     # The TTL is fixed at creation, so a sandbox near its end is replaced before a turn, not during one.
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     await manager.slots.renew(handle.name, time.time() + manager.min_remaining_s - 1)
 
@@ -115,25 +115,25 @@ async def test_ensure_recycles_a_sandbox_about_to_expire(fake_async_redis):
     assert provider.deleted == [handle.name]
 
 
-async def test_ensure_asks_the_service_when_redis_lost_track(fake_async_redis):
+async def test_ensure_asks_the_service_when_redis_lost_track(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
-    await fake_async_redis.flushdb()
+    await async_redis_db.flushdb()
 
     again, fresh = await manager.ensure(handle.name, "c")
     assert again.name == handle.name and not fresh
     assert await manager.slots.expires_at(handle.name) == pytest.approx(handle.expires_at)
 
-    await fake_async_redis.flushdb()
+    await async_redis_db.flushdb()
     provider.expire(handle.name)
     replacement, fresh = await manager.ensure(handle.name, "c")
     assert fresh and replacement.name != handle.name
 
 
-async def test_ensure_waits_for_capacity_then_gives_up(fake_async_redis):
+async def test_ensure_waits_for_capacity_then_gives_up(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider, capacity=1, busy_wait_s=5)
+    manager = make_manager(async_redis_db, provider, capacity=1, busy_wait_s=5)
     first, _ = await manager.ensure(None, "a")
     await manager.slots.touch(first.name, time.time())  # in use, so not reapable
 
@@ -148,33 +148,33 @@ async def test_ensure_waits_for_capacity_then_gives_up(fake_async_redis):
     assert len(provider.created) == 1
 
 
-async def test_ensure_gets_a_slot_freed_while_waiting(fake_async_redis):
+async def test_ensure_gets_a_slot_freed_while_waiting(async_redis_db):
     provider = FakeSandboxProvider()
-    first, _ = await make_manager(fake_async_redis, provider, capacity=1).ensure(None, "a")
+    first, _ = await make_manager(async_redis_db, provider, capacity=1).ensure(None, "a")
 
     async def free_slot(_):
-        await fake_async_redis.zrem(LEASES_KEY, first.name)
+        await async_redis_db.zrem(LEASES_KEY, first.name)
 
-    manager = make_manager(fake_async_redis, provider, capacity=1, sleep=free_slot)
+    manager = make_manager(async_redis_db, provider, capacity=1, sleep=free_slot)
     handle, fresh = await manager.ensure(None, "b")
     assert fresh and handle.name != first.name
 
 
-async def test_full_capacity_reaps_idle_sandboxes_first(fake_async_redis):
+async def test_full_capacity_reaps_idle_sandboxes_first(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider, capacity=1, busy_wait_s=0)
+    manager = make_manager(async_redis_db, provider, capacity=1, busy_wait_s=0)
     idle, _ = await manager.ensure(None, "a")
     await manager.slots.touch(idle.name, time.time() - 301)
 
     handle, fresh = await manager.ensure(None, "b")
 
     assert fresh and provider.deleted == [idle.name]
-    assert await fake_async_redis.zrange(LEASES_KEY, 0, -1) == [handle.name]
+    assert await async_redis_db.zrange(LEASES_KEY, 0, -1) == [handle.name]
 
 
-async def test_reap_idle_skips_busy_and_recent_sandboxes(fake_async_redis):
+async def test_reap_idle_skips_busy_and_recent_sandboxes(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     idle, _ = await manager.ensure(None, "a")
     recent, _ = await manager.ensure(None, "b")
     busy, _ = await manager.ensure(None, "c")
@@ -189,11 +189,11 @@ async def test_reap_idle_skips_busy_and_recent_sandboxes(fake_async_redis):
     assert await manager.reap_idle() == 1
 
     assert provider.deleted == [idle.name]
-    assert set(await fake_async_redis.zrange(LAST_USED_KEY, 0, -1)) == {recent.name, busy.name}
+    assert set(await async_redis_db.zrange(LAST_USED_KEY, 0, -1)) == {recent.name, busy.name}
     assert await manager.slots.expires_at(idle.name) is None
 
 
-async def test_failed_create_releases_its_slot(fake_async_redis):
+async def test_failed_create_releases_its_slot(async_redis_db):
     provider = FakeSandboxProvider()
 
     async def broken_create(ttl_s, display_name):
@@ -201,14 +201,14 @@ async def test_failed_create_releases_its_slot(fake_async_redis):
 
     provider.create = broken_create
     with pytest.raises(SandboxUnavailableError):
-        await make_manager(fake_async_redis, provider).ensure(None, "c")
-    assert await fake_async_redis.zcard(LEASES_KEY) == 0
+        await make_manager(async_redis_db, provider).ensure(None, "c")
+    assert await async_redis_db.zcard(LEASES_KEY) == 0
 
 
-async def test_cancel_during_create_deletes_the_orphan(fake_async_redis):
+async def test_cancel_during_create_deletes_the_orphan(async_redis_db):
     provider = FakeSandboxProvider()
     provider.create_delay = 0.05
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
 
     task = asyncio.create_task(manager.ensure(None, "c"))
     await asyncio.sleep(0.01)
@@ -218,29 +218,29 @@ async def test_cancel_during_create_deletes_the_orphan(fake_async_redis):
     await asyncio.sleep(0.1)
 
     assert provider.deleted == ["sbx-1"]
-    assert await fake_async_redis.zcard(LEASES_KEY) == 0
+    assert await async_redis_db.zcard(LEASES_KEY) == 0
 
 
-async def test_execute_marks_activity_and_releases_a_gone_sandbox(fake_async_redis):
+async def test_execute_marks_activity_and_releases_a_gone_sandbox(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
 
     before = time.time()
     result = await manager.execute(handle, "1 + 1")
     assert result.stdout == "ran: 1 + 1\n"
-    assert await fake_async_redis.zscore(LAST_USED_KEY, handle.name) >= before
+    assert await async_redis_db.zscore(LAST_USED_KEY, handle.name) >= before
 
     provider.expire(handle.name)
     with pytest.raises(SandboxGone):
         await manager.execute(handle, "2")
     assert await manager.slots.expires_at(handle.name) is None
-    assert await fake_async_redis.zscore(LAST_USED_KEY, handle.name) is None
+    assert await async_redis_db.zscore(LAST_USED_KEY, handle.name) is None
 
 
-async def test_execute_retries_a_concurrent_execution_rejection_once(fake_async_redis):
+async def test_execute_retries_a_concurrent_execution_rejection_once(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     calls = []
     original = provider.execute
@@ -263,17 +263,17 @@ async def test_execute_retries_a_concurrent_execution_rejection_once(fake_async_
         await manager.execute(handle, "x")
 
 
-def test_delete_sandbox_sync_forgets_redis_state(fake_redis, monkeypatch):
+def test_delete_sandbox_sync_forgets_redis_state(redis_db, monkeypatch):
     monkeypatch.setattr(sandbox_module, "AGENT_ENGINE_NAME", None)
-    fake_redis.zadd(LEASES_KEY, {"sbx": time.time() + 60})
-    fake_redis.zadd(LAST_USED_KEY, {"sbx": time.time()})
-    fake_redis.hset(datasets_key("sbx"), "d", "data/x.csv")
+    redis_db.zadd(LEASES_KEY, {"sbx": time.time() + 60})
+    redis_db.zadd(LAST_USED_KEY, {"sbx": time.time()})
+    redis_db.hset(datasets_key("sbx"), "d", "data/x.csv")
 
-    delete_sandbox_sync("sbx", fake_redis)
-    delete_sandbox_sync("sbx", fake_redis)  # idempotent
+    delete_sandbox_sync("sbx", redis_db)
+    delete_sandbox_sync("sbx", redis_db)  # idempotent
 
-    assert fake_redis.zcard(LEASES_KEY) == 0 and fake_redis.zcard(LAST_USED_KEY) == 0
-    assert not fake_redis.exists(datasets_key("sbx"))
+    assert redis_db.zcard(LEASES_KEY) == 0 and redis_db.zcard(LAST_USED_KEY) == 0
+    assert not redis_db.exists(datasets_key("sbx"))
 
 
 # --- Agent Engine adapter (fake SDK client) ---------------------------------------------------------------
@@ -499,9 +499,9 @@ async def test_delete_failure_maps_to_unavailable(provider, sdk):
         await provider.delete(SANDBOX)
 
 
-async def test_failed_recycle_delete_does_not_fail_the_turn(fake_async_redis):
+async def test_failed_recycle_delete_does_not_fail_the_turn(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     await manager.slots.renew(handle.name, time.time() + manager.min_remaining_s - 1)
 
@@ -579,8 +579,8 @@ def test_malformed_response_maps_to_unavailable(outputs):
 # --- reaper vs active runs --------------------------------------------------------------------------------
 
 
-async def test_claimed_sandbox_cannot_be_touched_and_vice_versa(fake_async_redis):
-    slots = SandboxSlots(fake_async_redis, capacity=5)
+async def test_claimed_sandbox_cannot_be_touched_and_vice_versa(async_redis_db):
+    slots = SandboxSlots(async_redis_db, capacity=5)
     old = time.time() - 1000
     await slots.touch("a", old)
 
@@ -594,9 +594,9 @@ async def test_claimed_sandbox_cannot_be_touched_and_vice_versa(fake_async_redis
     assert not await slots.claim_idle("b", time.time())
 
 
-async def test_ensure_marks_a_reused_sandbox_busy_so_the_reaper_skips_it(fake_async_redis):
+async def test_ensure_marks_a_reused_sandbox_busy_so_the_reaper_skips_it(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     await manager.slots.touch(handle.name, time.time() - 1000)  # long idle
 
@@ -606,9 +606,9 @@ async def test_ensure_marks_a_reused_sandbox_busy_so_the_reaper_skips_it(fake_as
     assert provider.deleted == []
 
 
-async def test_ensure_starts_fresh_when_the_reaper_claimed_the_sandbox(fake_async_redis):
+async def test_ensure_starts_fresh_when_the_reaper_claimed_the_sandbox(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     await manager.slots.touch(handle.name, time.time() - 1000)
     assert await manager.slots.claim_idle(handle.name, time.time())
@@ -618,9 +618,9 @@ async def test_ensure_starts_fresh_when_the_reaper_claimed_the_sandbox(fake_asyn
     assert fresh and replacement.name != handle.name
 
 
-async def test_execute_on_a_claimed_sandbox_is_gone_and_keeps_the_claim(fake_async_redis):
+async def test_execute_on_a_claimed_sandbox_is_gone_and_keeps_the_claim(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     await manager.slots.touch(handle.name, time.time() - 1000)
     assert await manager.slots.claim_idle(handle.name, time.time())
@@ -629,18 +629,18 @@ async def test_execute_on_a_claimed_sandbox_is_gone_and_keeps_the_claim(fake_asy
         await manager.execute(handle, "x")
 
     assert provider.created[0].executed == []
-    assert await fake_async_redis.zscore(LAST_USED_KEY, handle.name) == sandbox_module.CLAIMED
+    assert await async_redis_db.zscore(LAST_USED_KEY, handle.name) == sandbox_module.CLAIMED
     assert await manager.slots.expires_at(handle.name) is not None  # the reaper releases it
 
 
-async def test_execute_busy_mark_covers_the_given_deadline(fake_async_redis):
+async def test_execute_busy_mark_covers_the_given_deadline(async_redis_db):
     provider = FakeSandboxProvider()
-    manager = make_manager(fake_async_redis, provider)
+    manager = make_manager(async_redis_db, provider)
     handle, _ = await manager.ensure(None, "c")
     seen = {}
 
     async def spy(sandbox, code):
-        seen["busy_until"] = await fake_async_redis.zscore(LAST_USED_KEY, handle.name)
+        seen["busy_until"] = await async_redis_db.zscore(LAST_USED_KEY, handle.name)
         return ExecResult(0)
 
     provider.handler = spy
@@ -649,14 +649,14 @@ async def test_execute_busy_mark_covers_the_given_deadline(fake_async_redis):
     assert seen["busy_until"] >= start + 250
 
 
-def test_delete_sandbox_sync_failure_keeps_redis_state(fake_redis, monkeypatch):
+def test_delete_sandbox_sync_failure_keeps_redis_state(redis_db, monkeypatch):
     class BrokenClient:
         sandboxes = SimpleNamespace(delete=raiser(api_error(500, "INTERNAL")))
 
     monkeypatch.setattr(sandbox_module, "AGENT_ENGINE_NAME", ENGINE)
     monkeypatch.setattr(sandbox_module, "_sync_client", lambda: BrokenClient())
-    fake_redis.zadd(LEASES_KEY, {"sbx": time.time() + 60})
+    redis_db.zadd(LEASES_KEY, {"sbx": time.time() + 60})
 
     with pytest.raises(SandboxUnavailableError):
-        delete_sandbox_sync("sbx", fake_redis)
-    assert fake_redis.zcard(LEASES_KEY) == 1  # still counted until it really goes
+        delete_sandbox_sync("sbx", redis_db)
+    assert redis_db.zcard(LEASES_KEY) == 1  # still counted until it really goes

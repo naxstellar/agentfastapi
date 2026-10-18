@@ -61,7 +61,7 @@ def image_then_answer(messages):
     return AIMessage("?")
 
 
-async def test_run_saves_model_media_as_a_downloadable_artifact(db, make_deps, new_run, fake_async_redis):
+async def test_run_saves_model_media_as_a_downloadable_artifact(db, make_deps, new_run, async_redis_db):
     run = new_run("draw something")
     deps = make_deps(image_then_answer)
     await execute_run(deps, run.id)
@@ -69,7 +69,7 @@ async def test_run_saves_model_media_as_a_downloadable_artifact(db, make_deps, n
     rows = db.scalars(select(Artifact).where(Artifact.run_id == run.id)).all()
     assert [(r.kind, r.filename) for r in rows] == [("image", "media-1.png")]
     assert deps.storage.objects[rows[0].gcs_key] == PNG
-    evts = await stream_events(fake_async_redis, run.id)
+    evts = await stream_events(async_redis_db, run.id)
     artifact_events = [d for t, d in evts if t == "artifact"]
     assert artifact_events == [{"artifact_id": str(rows[0].id), "kind": "image", "filename": "media-1.png"}]
     reply = assistant_messages(db, run)[0].content
