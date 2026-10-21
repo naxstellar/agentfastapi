@@ -21,7 +21,7 @@ metadata:
   name: api-cert
 spec:
   domains:
-    - dev.example.com
+    - dev.app.nakulvijay.com
 ---
 apiVersion: networking.gke.io/v1beta1
 kind: FrontendConfig

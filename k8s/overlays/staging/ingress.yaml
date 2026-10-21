@@ -21,7 +21,7 @@ metadata:
   name: api-cert
 spec:
   domains:
-    - staging.example.com
+    - staging.app.nakulvijay.com
 ---
 apiVersion: networking.gke.io/v1beta1
 kind: FrontendConfig

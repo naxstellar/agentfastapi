@@ -1,5 +1,5 @@
 # GKE Autopilot (dev). Placeholders to replace in WP11/WP12 once the real values exist:
-#   SUFFIX (project ids), example.com (domain), the shared Artifact Registry path, AGENT_ENGINE_NAME, bucket name.
+#   SUFFIX (project ids), the shared Artifact Registry path, AGENT_ENGINE_NAME, bucket name.
 # CI sets the image tag: `kustomize edit set image agentfastapi-app=<registry>/app:sha-<sha>`.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -17,10 +17,10 @@ configMapGenerator:
   - name: agentfastapi-config
     literals:
       - APP_ENV=dev
-      - APP_BASE_URL=https://dev.example.com
-      - AUTH0_CALLBACK_URL=https://dev.example.com/callback
+      - APP_BASE_URL=https://dev.app.nakulvijay.com
+      - AUTH0_CALLBACK_URL=https://dev.app.nakulvijay.com/callback
       - AUTH0_DOMAIN=REPLACE.us.auth0.com
-      - AUTH0_AUDIENCE=https://api.dev.example.com/
+      - AUTH0_AUDIENCE=https://api.dev.app.nakulvijay.com/
       - GCS_BUCKET=agentfastapi-dev-data-SUFFIX
       - GCS_SIGNER_SERVICE_ACCOUNT=api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
       - AGENT_ENGINE_NAME=projects/NUMBER/locations/asia-south1/reasoningEngines/ID
