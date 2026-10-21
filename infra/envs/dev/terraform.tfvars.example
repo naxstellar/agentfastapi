@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars (gitignored).
+billing_account = "AAAAAA-BBBBBB-CCCCCC"
+alert_emails    = ["you@example.com"]
+
+# Needed to import local-dev's existing impersonation grant.
+# local_dev_impersonators = ["user:you@example.com"]
+
+# Leave both false for the first apply (creates the cluster); flip them one at a time afterwards.
+# install_addons              = true
+# create_cluster_secret_store = true

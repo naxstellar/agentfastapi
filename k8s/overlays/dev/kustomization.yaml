@@ -22,7 +22,7 @@ configMapGenerator:
       - AUTH0_DOMAIN=dev-wllzeq1m2ayehsrr.us.auth0.com
       - AUTH0_AUDIENCE=https://api.dev.app.nakulvijay.com/
       - GCS_BUCKET=agentfastapi-dev-data-SUFFIX
-      - GCS_SIGNER_SERVICE_ACCOUNT=api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
+      - GCS_SIGNER_SERVICE_ACCOUNT=agentfastapi-api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
       - AGENT_ENGINE_NAME=projects/NUMBER/locations/asia-south1/reasoningEngines/ID
 replicas:
   - name: api
@@ -38,14 +38,14 @@ patches:
       metadata:
         name: api
         annotations:
-          iam.gke.io/gcp-service-account: api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
+          iam.gke.io/gcp-service-account: agentfastapi-api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
   - patch: |-
       apiVersion: v1
       kind: ServiceAccount
       metadata:
         name: worker
         annotations:
-          iam.gke.io/gcp-service-account: worker@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
+          iam.gke.io/gcp-service-account: agentfastapi-worker@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com
   # Container-native load balancing, and the BackendConfig that keeps SSE streams open (see ingress.yaml).
   - patch: |-
       apiVersion: v1
