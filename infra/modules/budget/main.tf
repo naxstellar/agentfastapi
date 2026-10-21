@@ -1,3 +1,12 @@
+terraform {
+  required_providers {
+    google = {
+      source                = "hashicorp/google"
+      configuration_aliases = [google.billing]
+    }
+  }
+}
+
 variable "project" {
   type        = string
   description = "Environment project; the budget watches its spend."
@@ -43,6 +52,8 @@ data "google_project" "this" {
 }
 
 resource "google_billing_budget" "main" {
+  provider = google.billing
+
   billing_account = var.billing_account
   display_name    = var.display_name
 

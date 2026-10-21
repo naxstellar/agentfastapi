@@ -66,6 +66,10 @@ resource "google_service_networking_connection" "private_services" {
   network                 = google_compute_network.main.id
   service                 = "servicenetworking.googleapis.com"
   reserved_peering_ranges = [google_compute_global_address.private_services.name]
+
+  # Right after Cloud SQL / Memorystore are deleted, Google still reports the connection as in use and refuses to
+  # remove it. ABANDON leaves it to disappear with the VPC (it is free), so a teardown does not fail on it.
+  deletion_policy = "ABANDON"
 }
 
 # Private nodes have no public IPs, so Auth0 and the LLM APIs are reached through NAT.

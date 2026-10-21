@@ -110,6 +110,11 @@ module "ingress_dns" {
 module "budget" {
   source = "../../modules/budget"
 
+  providers = {
+    google         = google
+    google.billing = google.billing
+  }
+
   project         = local.project
   billing_account = var.billing_account
   display_name    = "${local.prefix} monthly"

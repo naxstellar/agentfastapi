@@ -30,8 +30,14 @@ terraform {
 provider "google" {
   project = local.project
   region  = var.region
+}
 
-  # The Billing Budgets API wants a quota project; the shared project has it enabled.
+# Only the budget uses this: the Billing Budgets API wants a quota project, and the shared project has it
+# enabled. Applying it to every call would bill quota to a project where Monitoring and Service Networking are off.
+provider "google" {
+  alias                 = "billing"
+  project               = local.project
+  region                = var.region
   user_project_override = true
   billing_project       = local.shared_project
 }

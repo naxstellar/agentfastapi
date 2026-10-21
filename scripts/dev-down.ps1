@@ -18,7 +18,9 @@ param(
     [switch]$Verify,
     [string]$Project = 'agentfastapi-dev-nv01'
 )
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': Windows PowerShell turns any stderr text from gcloud/kubectl (progress lines) into a terminating error.
+# Failures that matter are checked through $LASTEXITCODE below.
+$ErrorActionPreference = 'Continue'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $env:CLOUDSDK_CONFIG = "$env:APPDATA\gcloud-terraform"
 $env:GOOGLE_APPLICATION_CREDENTIALS = "$env:APPDATA\gcloud-terraform\application_default_credentials.json"
