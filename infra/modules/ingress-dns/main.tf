@@ -22,14 +22,12 @@ variable "hostname" {
   description = "Fully qualified name without the trailing dot, e.g. dev.app.nakulvijay.com."
 }
 
-# The Ingress and the Google-managed certificate attach to this address, so it must outlive the cluster.
+# The Ingress and the Google-managed certificate attach to this address. An unused reserved address is billed, so
+# there is no prevent_destroy: scripts/dev-down.ps1 releases it, and the next apply reserves a new one and
+# repoints the DNS record (the managed certificate is issued again, which takes a while).
 resource "google_compute_global_address" "ingress" {
   project = var.project
   name    = var.name
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "google_dns_record_set" "ingress" {

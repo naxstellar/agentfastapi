@@ -54,9 +54,15 @@ resource "random_password" "db" {
   special = false # the password goes into a URL
 }
 
+# Cloud SQL keeps a deleted instance's name reserved for about a week, so a destroy followed by an apply would
+# fail on a fixed name. The suffix is stable for the life of the state and new after a destroy.
+resource "random_id" "instance" {
+  byte_length = 2
+}
+
 resource "google_sql_database_instance" "main" {
   project             = var.project
-  name                = var.name
+  name                = "${var.name}-${random_id.instance.hex}"
   region              = var.region
   database_version    = "POSTGRES_16"
   deletion_protection = var.deletion_protection
@@ -90,17 +96,20 @@ resource "google_sql_database_instance" "main" {
   depends_on = [var.private_services_connection]
 }
 
+# ABANDON: when the instance is destroyed, dropping the role or database first can fail on owned objects.
 resource "google_sql_database" "app" {
-  project  = var.project
-  instance = google_sql_database_instance.main.name
-  name     = var.database_name
+  project         = var.project
+  instance        = google_sql_database_instance.main.name
+  name            = var.database_name
+  deletion_policy = "ABANDON"
 }
 
 resource "google_sql_user" "app" {
-  project  = var.project
-  instance = google_sql_database_instance.main.name
-  name     = var.user_name
-  password = random_password.db.result
+  project         = var.project
+  instance        = google_sql_database_instance.main.name
+  name            = var.user_name
+  password        = random_password.db.result
+  deletion_policy = "ABANDON"
 }
 
 output "instance_name" {
