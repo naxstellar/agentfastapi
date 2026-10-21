@@ -19,7 +19,7 @@ configMapGenerator:
       - APP_ENV=dev
       - APP_BASE_URL=https://dev.app.nakulvijay.com
       - AUTH0_CALLBACK_URL=https://dev.app.nakulvijay.com/callback
-      - AUTH0_DOMAIN=REPLACE.us.auth0.com
+      - AUTH0_DOMAIN=dev-wllzeq1m2ayehsrr.us.auth0.com
       - AUTH0_AUDIENCE=https://api.dev.app.nakulvijay.com/
       - GCS_BUCKET=agentfastapi-dev-data-SUFFIX
       - GCS_SIGNER_SERVICE_ACCOUNT=api@agentfastapi-dev-SUFFIX.iam.gserviceaccount.com

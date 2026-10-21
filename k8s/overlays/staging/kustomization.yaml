@@ -19,7 +19,7 @@ configMapGenerator:
       - APP_ENV=staging
       - APP_BASE_URL=https://staging.app.nakulvijay.com
       - AUTH0_CALLBACK_URL=https://staging.app.nakulvijay.com/callback
-      - AUTH0_DOMAIN=REPLACE.us.auth0.com
+      - AUTH0_DOMAIN=dev-wllzeq1m2ayehsrr.us.auth0.com
       - AUTH0_AUDIENCE=https://api.staging.app.nakulvijay.com/
       - GCS_BUCKET=agentfastapi-staging-data-SUFFIX
       - GCS_SIGNER_SERVICE_ACCOUNT=api@agentfastapi-staging-SUFFIX.iam.gserviceaccount.com
